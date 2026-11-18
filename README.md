@@ -25,8 +25,10 @@ A lightweight Postman replacement for the PS SYG Support team. Written in Python
 1. Double-click **`Launch API Client.bat`** on Windows, or **`Launch API Client.command`** on a Mac
    (or the desktop shortcut). The first start takes a minute while it sets itself up. The app opens in
    your web browser.
-   - Mac, first time only: if macOS says it can't be opened, **right-click → Open → Open**. A Terminal
-     window appears; you can close it once the browser opens.
+   - Mac, first time only: if macOS says *"Apple could not verify…"*, click **Done**, then open
+     **System Settings → Privacy & Security**, scroll down to *"Launch API Client.command was blocked"*
+     and click **Open Anyway** (enter your Mac password), then **Open Anyway** again. You only do this
+     once. A Terminal window appears; you can close it once the browser opens.
 2. **Pick an environment** at the top right (the district / SIS you are working on).
    Edit it on the **Environments** tab: paste the API keys and fill in IDs.
 3. Click a request on the left, then press **Send** (or **Ctrl+Enter** / **⌘Enter**). **Ctrl+S** / **⌘S** saves.
@@ -58,6 +60,16 @@ git clone https://github.com/dr460n4ir3/schoology-t2-support-rest-api-client.git
 Then double-click `Launch API Client.bat` (Mac: `Launch API Client.command`), and optionally
 `Create Desktop Shortcut.bat` (Mac: `Create Desktop Shortcut.command`). The `.command` files are committed
 as executable; if a Mac says they aren't, run `chmod +x *.command` once in the repo folder.
+
+**macOS "Apple could not verify…" warning**: macOS blocks unsigned scripts/apps that were *downloaded*
+(browser, ZIP, Teams, email). Ways around it, best first:
+- Install with `git clone` (or GitHub Desktop) instead of downloading a ZIP. Cloned files aren't flagged,
+  so no warning appears.
+- Clear the download flag once on that Mac: `xattr -dr com.apple.quarantine "/path/to/the/folder"`.
+- Or have each person allow it once: System Settings → Privacy & Security → **Open Anyway**.
+- To remove the warning for everyone permanently, the build has to be signed and notarized with an
+  Apple Developer ID (ask whether your company already has one), or pushed out through your Mac
+  management tool (Self Service / Jamf / Intune).
 After a `git pull`, the launcher re-installs components only if `requirements.txt` changed.
 
 ### Stand-alone build (no Python on team PCs)
@@ -65,7 +77,8 @@ After a `git pull`, the launcher re-installs components only if `requirements.tx
   share it; people unzip and run `Schoology API Client.exe`.
 - **Mac**: double-click `build_app.command` on a Mac (PyInstaller can't build for another OS). It produces
   `dist/Schoology API Client.app`. Zip and share it. The app isn't code-signed, so the first launch needs
-  **right-click → Open**. An Apple silicon build only runs on Apple silicon Macs; build on Intel for Intel.
+  **System Settings → Privacy & Security → Open Anyway** (see above). An Apple silicon build only runs on
+  Apple silicon Macs; build on Intel for Intel.
 
 Rebuild and re-share when you change the code.
 (The AI/MCP connection needs the Python route.)

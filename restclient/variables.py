@@ -28,15 +28,23 @@ def _dynamic(name: str) -> str | None:
     return None
 
 
+def is_unset(value: str) -> bool:
+    """Blank values and the example placeholders ("PASTE-CONSUMER-KEY", ...) count as not set."""
+    v = (value or "").strip()
+    return v == "" or v.upper().startswith("PASTE-")
+
+
 def build_scope(collection: Collection | None, environment: Environment | None,
                 extra: dict | None = None) -> dict[str, str]:
-    # Blank collection/environment values count as "not set": sending /users/ with an empty id is
-    # almost always a mistake, so we would rather warn. (A blank CSV cell is still used as-is.)
+    # Blank/placeholder collection/environment values count as "not set": sending /users/ with an empty
+    # id, or a key that still says PASTE-..., is always a mistake, so we would rather warn.
+    # (A blank CSV cell is still used as-is.)
     scope: dict[str, str] = {}
     if collection:
-        scope.update({v.key: v.value for v in collection.variables if v.enabled and v.key and v.value != ""})
+        scope.update({v.key: v.value for v in collection.variables if v.enabled and v.key and not is_unset(v.value)})
     if environment:
-        scope.update({v.key: v.value for v in environment.variables if v.enabled and v.key and v.value != ""})
+        scope.update({v.key: v.value for v in environment.variables
+                      if v.enabled and v.key and not is_unset(v.value)})
     if extra:
         scope.update({str(k).strip(): "" if v is None else str(v) for k, v in extra.items() if str(k).strip()})
     return scope

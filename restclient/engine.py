@@ -93,7 +93,8 @@ def resolve(request: Request, collection: Collection | None = None, environment:
         url = "https://" + url
 
     auth = effective_auth(request, collection, environment)
-    auth_data = {k: (s(v) if k != "type" else v) for k, v in auth.to_dict().items()}
+    # Credentials never contain leading/trailing spaces, but copy-pasted keys often do (-> 401)
+    auth_data = {k: (s(v).strip() if k != "type" else v) for k, v in auth.to_dict().items()}
     resolved_auth = Auth.from_dict(auth_data, auth.type)
 
     def pairs(items):

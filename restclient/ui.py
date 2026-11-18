@@ -21,7 +21,7 @@ from . import APP_NAME, __version__, engine, postman, runner
 from .config import app_home, save_settings
 from .models import (AUTH_TYPES, BODY_MODES, METHODS, OAUTH1_SIGNATURES, KV, Auth, Collection, Environment,
                      Folder, Request)
-from .variables import missing_variables, request_variables
+from .variables import is_unset, missing_variables, request_variables
 from .workspace import Workspace
 
 log = logging.getLogger(__name__)
@@ -58,6 +58,141 @@ def method_label(method: str, cls: str = "") -> None:
     ui.label(method).classes(f"{METHOD_COLORS.get(method, '')} text-xs font-bold font-mono {cls}")
 
 
+# Postman-style {{variable}} highlighting for any ui.input with the "rc-vars" class.
+# A transparent "mirror" div is laid over the input and draws the same text with coloured
+# {{variables}} (green = set, red = not set, purple = dynamic). Hovering shows the value;
+# clicking a variable (or a [data-rc-var] chip) emits "rc_var_click" so Python can open the editor.
+VAR_HIGHLIGHT_HTML = r"""
+<style>
+  .rc-hl-mirror { position: absolute; pointer-events: none; overflow: hidden; display: flex;
+                  align-items: center; box-sizing: border-box; color: var(--rc-fg, #1f2328); z-index: 1; }
+  .rc-hl-mirror > span.rc-txt { white-space: pre; flex: none; }
+  input.rc-hl-active { color: transparent !important; caret-color: var(--rc-fg, #1f2328); }
+  .rc-var { border-radius: 3px; }
+  .rc-var-ok { color: #0b6e4f; background: rgba(16, 163, 107, .14); }
+  .rc-var-missing { color: #c62828; background: rgba(229, 57, 53, .14); }
+  .rc-var-dyn { color: #7b1fa2; background: rgba(142, 36, 170, .12); }
+  .body--dark .rc-var-ok { color: #4ade9b; background: rgba(74, 222, 155, .14); }
+  .body--dark .rc-var-missing { color: #ff7b72; background: rgba(255, 123, 114, .16); }
+  .body--dark .rc-var-dyn { color: #d2a8ff; background: rgba(210, 168, 255, .14); }
+  .rc-var-tip { position: fixed; z-index: 9999; max-width: 460px; padding: 6px 10px; border-radius: 6px;
+                background: #24292f; color: #fff; font-size: 12px; line-height: 1.4; pointer-events: none;
+                white-space: pre-wrap; word-break: break-all; display: none;
+                box-shadow: 0 4px 12px rgba(0,0,0,.2); }
+  .rc-var-tip b { font-family: ui-monospace, monospace; }
+  .rc-chip { display: inline-block; cursor: pointer; font-family: ui-monospace, monospace; font-size: 12px;
+             padding: 1px 8px; border-radius: 10px; margin: 0 4px 2px 0; }
+  .rc-chip:hover { filter: brightness(.92); text-decoration: underline; }
+</style>
+<script>
+(() => {
+  window.rcVars = {};
+  window.rcSetVars = (v) => {
+    window.rcVars = v || {};
+    document.querySelectorAll('.rc-vars input').forEach(i => { i._rcLast = null; });
+  };
+  const RE = /\{\{\s*([^{}]+?)\s*\}\}/g;
+  const esc = s => s.replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+  const cls = n => n.startsWith('$') ? 'rc-var-dyn' : (n in window.rcVars ? 'rc-var-ok' : 'rc-var-missing');
+  function toHtml(text) {
+    let out = '', last = 0, m;
+    RE.lastIndex = 0;
+    while ((m = RE.exec(text)) !== null) {
+      out += esc(text.slice(last, m.index)) +
+        `<span class="rc-var ${cls(m[1])}" data-var="${esc(m[1])}">${esc(m[0])}</span>`;
+      last = m.index + m[0].length;
+    }
+    return out + esc(text.slice(last)) + ' ';
+  }
+  function sync(inp) {
+    const show = inp.type !== 'password' && inp.value.includes('{{') && inp.offsetWidth > 0;
+    let m = inp._rcMirror;
+    if (!show) {
+      if (m) { m.style.display = 'none'; inp.classList.remove('rc-hl-active'); }
+      inp._rcLast = null;
+      return;
+    }
+    const parent = inp.parentElement;
+    if (!m || !m.isConnected) {
+      if (getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
+      m = document.createElement('div');
+      m.className = 'rc-hl-mirror';
+      m.innerHTML = '<span class="rc-txt"></span>';
+      parent.appendChild(m);
+      inp._rcMirror = m;
+      ['scroll', 'input', 'keyup', 'mouseup', 'select'].forEach(ev =>
+        inp.addEventListener(ev, () => { sync(inp); m.scrollLeft = inp.scrollLeft; }));
+    }
+    const cs = getComputedStyle(inp);
+    Object.assign(m.style, {
+      display: 'flex', left: inp.offsetLeft + 'px', top: inp.offsetTop + 'px',
+      width: inp.offsetWidth + 'px', height: inp.offsetHeight + 'px', font: cs.font,
+      letterSpacing: cs.letterSpacing, paddingLeft: cs.paddingLeft, paddingRight: cs.paddingRight,
+    });
+    if (inp._rcLast !== inp.value) {
+      m.firstChild.innerHTML = toHtml(inp.value);
+      inp._rcLast = inp.value;
+    }
+    inp.classList.add('rc-hl-active');
+    m.scrollLeft = inp.scrollLeft;
+  }
+  setInterval(() => document.querySelectorAll('.rc-vars input').forEach(sync), 250);
+
+  function hit(e) {
+    const inp = e.target;
+    if (!(inp instanceof HTMLInputElement) || !inp._rcMirror || inp._rcMirror.style.display === 'none') return null;
+    const box = inp._rcMirror.getBoundingClientRect();
+    for (const s of inp._rcMirror.querySelectorAll('.rc-var')) {
+      const r = s.getBoundingClientRect();
+      if (e.clientX >= Math.max(r.left, box.left) && e.clientX <= Math.min(r.right, box.right) &&
+          e.clientY >= box.top && e.clientY <= box.bottom) return {name: s.dataset.var, rect: r};
+    }
+    return null;
+  }
+  const tip = document.createElement('div');
+  tip.className = 'rc-var-tip';
+  if (document.body) document.body.appendChild(tip);
+  else document.addEventListener('DOMContentLoaded', () => document.body.appendChild(tip));
+  function describe(name) {
+    if (name.startsWith('$')) return `<b>{{${esc(name)}}}</b>\nDynamic: a new value is generated every time you send.`;
+    const v = window.rcVars[name];
+    if (!v) return `<b>{{${esc(name)}}}</b> is not set.\nClick to set it.`;
+    return `<b>{{${esc(name)}}}</b> = ${esc(v.value)}\n${esc(v.src)} · click to edit`;
+  }
+  document.addEventListener('mousemove', (e) => {
+    const chip = e.target.closest && e.target.closest('[data-rc-var]');
+    const h = chip ? {name: chip.dataset.rcVar, rect: chip.getBoundingClientRect()} : hit(e);
+    if (e.target instanceof HTMLInputElement && e.target._rcMirror) e.target.style.cursor = h ? 'pointer' : '';
+    if (!h) { tip.style.display = 'none'; return; }
+    tip.innerHTML = describe(h.name);
+    tip.style.display = 'block';
+    tip.style.left = Math.min(h.rect.left, window.innerWidth - tip.offsetWidth - 8) + 'px';
+    tip.style.top = (h.rect.bottom + 6) + 'px';
+  });
+  const popOpen = () => { const p = document.querySelector('.rc-var-pop'); return p && p.offsetParent !== null ? p : null; };
+  document.addEventListener('click', (e) => {
+    const chip = e.target.closest && e.target.closest('[data-rc-var]');
+    const h = chip ? {name: chip.dataset.rcVar, rect: chip.getBoundingClientRect()} : hit(e);
+    if (!h) return;
+    tip.style.display = 'none';
+    const x = Math.max(8, Math.min(h.rect.left, window.innerWidth - 450));
+    const y = Math.min(h.rect.bottom, window.innerHeight - 260);
+    emitEvent('rc_var_click', {name: h.name, x: Math.round(x), y: Math.round(y)});
+  });
+  // close the variable editor on Escape or a click elsewhere
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && popOpen()) emitEvent('rc_var_close'); });
+  document.addEventListener('mousedown', (e) => {
+    const p = popOpen();
+    if (!p || p.contains(e.target) || (e.target.closest && e.target.closest('[data-rc-var]')) || hit(e)) return;
+    emitEvent('rc_var_close');
+  });
+})();
+</script>
+"""
+
+SECRET_HINTS = ("secret", "password", "token", "api_key", "apikey")
+
+
 class KVEditor:
     """Editable table of key/value rows (params, headers, form fields, variables)."""
 
@@ -91,11 +226,11 @@ class KVEditor:
                         .props("dense").tooltip("Include this row")
                     ui.input(value=kv.key, placeholder=self.key_label,
                              on_change=lambda e, kv=kv: self._changed(kv, "key", e.value)) \
-                        .props("dense outlined").classes("w-1/3 font-mono")
+                        .props("dense outlined").classes("w-1/3 font-mono rc-vars")
                     ui.input(value=kv.value, placeholder=self.value_label, password=kv.secret,
                              password_toggle_button=kv.secret,
                              on_change=lambda e, kv=kv: self._changed(kv, "value", e.value)) \
-                        .props("dense outlined").classes("flex-grow font-mono")
+                        .props("dense outlined").classes("flex-grow font-mono rc-vars")
                     if self.secrets:
                         ui.button(icon="lock" if kv.secret else "lock_open",
                                   on_click=lambda kv=kv: self._toggle_secret(kv)) \
@@ -140,7 +275,8 @@ class AuthEditor:
 
     def _field(self, attr: str, label: str, secret: bool = False, hint: str = "") -> None:
         inp = ui.input(label, value=getattr(self.auth, attr), password=secret, password_toggle_button=secret,
-                       on_change=lambda e: self._set(attr, e.value)).props("dense outlined").classes("w-full font-mono")
+                       on_change=lambda e: self._set(attr, e.value)).props("dense outlined") \
+            .classes("w-full font-mono rc-vars")
         if hint:
             inp.props(f'hint="{hint}"')
 
@@ -230,6 +366,7 @@ class ClientPage:
 
         self.build()
         self._ready = True
+        ui.timer(0.3, self.push_var_info, once=True)  # first colouring of {{variables}} once the browser is connected
 
     # ------------------------------------------------------------------ helpers
     def env(self) -> Environment | None:
@@ -276,7 +413,8 @@ class ClientPage:
                 ui.button(icon="content_copy", on_click=lambda: (ui.clipboard.write(text), ui.notify("Copied"))) \
                     .props("flat round").tooltip("Copy")
                 ui.button(icon="close", on_click=d.close).props("flat round")
-            cm = ui.codemirror(text, language=language, line_wrapping=True).classes("w-full").style("height: 60vh")
+            cm = ui.codemirror(text, language=language, line_wrapping=True, theme=self.cm_theme()) \
+                .classes("w-full").style("height: 60vh")
             cm.disable()
         d.on("hide", d.delete)
         d.open()
@@ -284,20 +422,44 @@ class ClientPage:
     # =================================================================== layout
     def build(self) -> None:
         ui.colors(primary="#1f6feb")
+        # Light / dark theme: Quasar puts "body--dark" on <body> in dark mode; our own colours follow it.
+        self.dark = ui.dark_mode(value=bool(load_ui_state().get("dark", False)))
+        # The app has its own dark mode: stop the Dark Reader browser extension from re-colouring it
+        ui.add_head_html('<meta name="darkreader-lock">')
         ui.add_css("""
-            :root { color-scheme: light; }
-            body { background: #f7f8fa !important; color: #1f2328; }
+            :root { color-scheme: light; --rc-bg: #f7f8fa; --rc-fg: #1f2328; --rc-panel: #ffffff;
+                    --rc-side: #f5f5f5; --rc-active: #e8f0fe; --rc-border: rgba(0,0,0,.12); }
+            :root:has(body.body--dark) { color-scheme: dark; --rc-bg: #0d1117; --rc-fg: #e6edf3;
+                    --rc-panel: #161b22; --rc-side: #11161d; --rc-active: #1f3a5f; --rc-border: rgba(255,255,255,.14); }
+            body { background: var(--rc-bg) !important; color: var(--rc-fg); }
+            .app-header { background: var(--rc-panel) !important; color: var(--rc-fg) !important;
+                          border-bottom: 1px solid var(--rc-border); }
+            .app-drawer { background: var(--rc-side) !important; }
+            .body--dark .text-grey-7 { color: #9da7b3 !important; }
+            .body--dark .text-grey-8 { color: #b4bdc7 !important; }
+            .body--dark .border, .body--dark .border-b { border-color: var(--rc-border) !important; }
             .nicegui-content { padding: 12px 16px; }
             .cm-editor { height: 100%; font-size: 13px; }
             .req-item { min-height: 28px !important; padding: 0 8px !important; border-radius: 6px; }
-            .req-item.active { background: #e8f0fe; }
+            .req-item.active { background: var(--rc-active); }
             .q-expansion-item__container > .q-item { min-height: 32px; padding: 0 4px; }
             .q-drawer .q-scrollarea__container { overflow-x: hidden !important; }
             .q-drawer .q-scrollarea__content { width: 100%; }
         """)
         self.dialog_host = ui.element("div")
+        # {{variable}} highlighting + click-to-edit popover (anchored where the variable was clicked)
+        ui.add_body_html(VAR_HIGHLIGHT_HTML)
+        # A plain fixed-position card (q-menu can't be anchored to an arbitrary point when opened from code).
+        # The browser script closes it on Escape / click outside by emitting "rc_var_close".
+        self.var_pop = ui.card().classes("rc-var-pop p-0 shadow-lg") \
+            .style("position: fixed; z-index: 6000; left: 0; top: 0").props("bordered")
+        self.var_pop.set_visibility(False)
+        with self.var_pop:
+            self.var_menu_body = ui.column().classes("p-3 gap-2 w-[420px]")
+        ui.on("rc_var_click", self.on_var_click)
+        ui.on("rc_var_close", self.close_var_editor)
 
-        with ui.header(elevated=False).classes("items-center bg-white text-black border-b px-3 py-1 gap-2"):
+        with ui.header(elevated=False).classes("app-header items-center px-3 py-1 gap-2"):
             ui.button(icon="menu", on_click=lambda: self.drawer.toggle()).props("flat round dense")
             ui.icon("api", size="sm", color="primary")
             ui.label(APP_NAME).classes("text-lg font-semibold")
@@ -307,13 +469,17 @@ class ClientPage:
                                         on_change=self.on_env_change) \
                 .props('dense outlined options-dense placeholder="No environment"').classes("w-80")
             self.refresh_env_options()
+            self.theme_btn = ui.button(on_click=self.toggle_dark).props("flat round dense")
+            with self.theme_btn:
+                self.theme_tip = ui.tooltip("")
+            self.update_theme_button()
             ui.button(icon="settings", on_click=self.open_settings).props("flat round dense").tooltip("Settings")
             ui.button(icon="help_outline", on_click=lambda: self.tabs.set_value("AI & Help")) \
                 .props("flat round dense").tooltip("Help")
             ui.button(icon="power_settings_new", on_click=self.quit_app).props("flat round dense color=red") \
                 .tooltip("Quit the app (closes the background server)")
 
-        with ui.left_drawer(value=True, bordered=True).props("width=330").classes("bg-grey-1 p-2") as self.drawer:
+        with ui.left_drawer(value=True, bordered=True).props("width=330").classes("app-drawer p-2") as self.drawer:
             with ui.row().classes("w-full items-center no-wrap"):
                 ui.label("Collections").classes("text-base font-semibold")
                 ui.space()
@@ -349,6 +515,22 @@ class ClientPage:
             ui.notify("Some files could not be loaded: " + "; ".join(WS.store.load_errors), type="warning",
                       multi_line=True, timeout=10000)
         self.load_request(self.current, None)
+
+    # ================================================================== theme
+    def cm_theme(self) -> str:
+        return "vscodeDark" if self.dark.value else "basicLight"
+
+    def update_theme_button(self) -> None:
+        self.theme_btn.props(f'icon={"light_mode" if self.dark.value else "dark_mode"}')
+        self.theme_tip.text = "Switch to light mode" if self.dark.value else "Switch to dark mode"
+
+    def toggle_dark(self) -> None:
+        self.dark.value = not self.dark.value
+        save_ui_state(dark=self.dark.value)
+        self.update_theme_button()
+        for el in list(ui.context.client.elements.values()):
+            if isinstance(el, ui.codemirror):
+                el.theme = self.cm_theme()
 
     # ============================================================== environments
     def refresh_env_options(self) -> None:
@@ -661,14 +843,14 @@ class ClientPage:
             self.method_select = ui.select(METHODS, value="GET", on_change=self.on_method_change) \
                 .props("dense outlined options-dense").classes("w-32 font-bold")
             self.url_input = ui.input(placeholder="{{base_url}}/users/{{user_id}}", on_change=self.on_url_change) \
-                .props("dense outlined").classes("flex-grow font-mono")
+                .props("dense outlined").classes("flex-grow font-mono rc-vars")
             self.url_input.on("keydown.enter", self.send_current)
             self.url_input.on("blur", self.split_query_into_params)
             self.pages_switch = ui.switch("All pages", on_change=self.on_pages_change) \
                 .tooltip("Follow OneRoster paging (limit/offset, Link: next) and merge every page")
             self.send_btn = ui.button("Send", icon="send", on_click=self.send_current) \
                 .props("no-caps unelevated").classes("px-6")
-        self.var_warning = ui.label().classes("text-orange-9 text-sm")
+        self.var_warning = ui.row().classes("w-full items-center gap-0 text-sm text-orange-9")
 
         with ui.tabs().props("align=left no-caps dense").classes("w-full") as rt:
             self.tabs_request = rt
@@ -685,7 +867,7 @@ class ClientPage:
             with ui.tab_panel("Body").classes("p-3"):
                 self.body_mode = ui.toggle(BODY_MODES, value="none", on_change=self.on_body_mode) \
                     .props("no-caps dense unelevated toggle-color=primary")
-                self.body_editor = ui.codemirror("", language="JSON", on_change=self.on_body_change,
+                self.body_editor = ui.codemirror("", language="JSON", on_change=self.on_body_change, theme=self.cm_theme(),
                                                  line_wrapping=True) \
                     .classes("w-full border rounded mt-2").style("height: 220px")
                 self.body_tools = ui.row().classes("gap-1")
@@ -719,7 +901,7 @@ class ClientPage:
                 ui.tab("Sent", label="Request sent")
             with ui.tab_panels(rtabs, value="Body").classes("w-full").props("animated=false"):
                 with ui.tab_panel("Body").classes("p-0"):
-                    self.resp_body = ui.codemirror("", language="JSON", line_wrapping=True) \
+                    self.resp_body = ui.codemirror("", language="JSON", line_wrapping=True, theme=self.cm_theme()) \
                         .classes("w-full border rounded").style("height: 45vh")
                     self.resp_body.disable()
                 with ui.tab_panel("Headers").classes("p-0"):
@@ -729,7 +911,7 @@ class ClientPage:
                          "style": "white-space: normal; word-break: break-all"}],
                         row_key="name").props("dense flat").classes("w-full")
                 with ui.tab_panel("Sent").classes("p-0"):
-                    self.sent_view = ui.codemirror("", line_wrapping=True).classes("w-full border rounded") \
+                    self.sent_view = ui.codemirror("", line_wrapping=True, theme=self.cm_theme()).classes("w-full border rounded") \
                         .style("height: 30vh")
                     self.sent_view.disable()
 
@@ -912,12 +1094,145 @@ class ClientPage:
     # ------------------------------------------------------- variables
     def update_var_warning(self) -> None:
         missing = sorted(missing_variables(self.current, self.collection(), self.env()))
-        if missing:
-            where = "Pick an environment (top right) or add them" if not self.env() else \
-                f"Add them to '{self.env().name}' or the collection variables"
-            self.var_warning.text = "⚠ Not set (or blank): " + ", ".join("{{%s}}" % m for m in missing) + f". {where}."
+        key = tuple(missing), self.env_id
+        if key != getattr(self, "_warned", None):  # rebuild only when it changes (this runs on every keystroke)
+            self._warned = key
+            self.var_warning.clear()
+            if missing:
+                with self.var_warning:
+                    ui.label("⚠ Not set:").classes("mr-2")
+                    for m in missing:
+                        ui.label("{{%s}}" % m).classes("rc-chip rc-var-missing").props(f'data-rc-var="{m}"')
+                    ui.label("Click one to set it." if self.env() or self.collection() else
+                             "Pick an environment (top right) first.").classes("ml-1 text-grey-7")
+        self.push_var_info()
+
+    def var_sources(self) -> dict[str, tuple[str, KV]]:
+        """name -> (where it's set, the KV row). Environment beats collection, blank counts as not set."""
+        out: dict[str, tuple[str, KV]] = {}
+        c, env = self.collection(), self.env()
+        if c:
+            out.update({v.key: (f"Collection: {c.name}", v) for v in c.variables if v.enabled and v.key and not is_unset(v.value)})
+        if env:
+            out.update({v.key: (f"Environment: {env.name}", v) for v in env.variables
+                        if v.enabled and v.key and not is_unset(v.value)})
+        return out
+
+    def push_var_info(self) -> None:
+        """Tell the browser which variables are set (and their values, secrets masked) for highlighting."""
+        if not self._ready:
+            return
+        data = {k: {"src": src, "value": "•••••• (secret)" if kv.secret else kv.value[:300]}
+                for k, (src, kv) in self.var_sources().items()}
+        payload = json.dumps(data)
+        if payload != getattr(self, "_pushed_vars", None):
+            self._pushed_vars = payload
+            ui.run_javascript(f"window.rcSetVars && window.rcSetVars({payload})")
+
+    def on_var_click(self, e) -> None:
+        args = e.args[0] if isinstance(e.args, list) else e.args
+        name = str(args.get("name", "")).strip()
+        if not name:
+            return
+        x, y = int(args.get("x", 0)), int(args.get("y", 0))
+        self.build_var_editor(name)
+        self.var_pop.style(f"left: {x}px; top: {y + 4}px")
+        self.var_pop.set_visibility(True)
+
+    def close_var_editor(self) -> None:
+        self.var_pop.set_visibility(False)
+
+    def build_var_editor(self, name: str) -> None:
+        c, env = self.collection(), self.env()
+        source = self.var_sources().get(name)
+        env_kv = next((v for v in env.variables if v.key == name), None) if env else None
+        coll_kv = next((v for v in c.variables if v.key == name), None) if c else None
+        self.var_menu_body.clear()
+        with self.var_menu_body:
+            with ui.row().classes("w-full items-center no-wrap gap-2"):
+                ui.label("{{%s}}" % name).classes("font-mono font-semibold text-base")
+                ui.space()
+                if name.startswith("$"):
+                    ui.badge("dynamic", color="purple").props("outline")
+                elif source:
+                    ui.badge(source[0], color="green").props("outline").classes("truncate max-w-[220px]")
+                else:
+                    ui.badge("not set", color="red").props("outline")
+            if name.startswith("$"):
+                ui.label("A new value is generated every time you send: $guid (random id), $timestamp, "
+                         "$isoTimestamp, $randomInt.").classes("text-sm text-grey-8")
+                return
+            if not env and not c:
+                ui.label("Pick an environment (top right), or save this request into a collection, "
+                         "to give this variable a value.").classes("text-sm text-grey-8")
+                return
+            targets: dict[str, str] = {}
+            if env:
+                targets["env"] = f"Environment: {env.name}"
+            if c:
+                targets["coll"] = f"Collection: {c.name}"
+            # Edit it where it's currently set; a brand-new variable goes into the environment if one is picked
+            if source:
+                default = "env" if source[0].startswith("Environment") else "coll"
+            elif env and env_kv is not None:
+                default = "env"
+            elif c and coll_kv is not None:
+                default = "coll"
+            else:
+                default = "env" if env else "coll"
+            existing = (env_kv if default == "env" else coll_kv)
+            secret = bool(existing.secret) if existing else any(h in name.lower() for h in SECRET_HINTS)
+            value = ui.input("Value", value=existing.value if existing and not is_unset(existing.value) else "",
+                             password=secret,
+                             password_toggle_button=secret).props("dense outlined autofocus") \
+                .classes("w-full font-mono")
+            target = ui.toggle(targets, value=default).props("no-caps dense unelevated toggle-color=primary") \
+                .classes("text-xs") if len(targets) > 1 else None
+
+            def switch_target(e) -> None:  # show the value stored in the newly picked place
+                kv = env_kv if e.value == "env" else coll_kv
+                value.value = kv.value if kv and not is_unset(kv.value) else ""
+
+            if target is not None:
+                target.on_value_change(switch_target)
+            ui.label("Environment = just this district/connection. Collection = default for everyone using "
+                     "the collection.").classes("text-xs text-grey-7")
+
+            def save() -> None:
+                self.save_variable(name, value.value or "", target.value if target is not None else default, secret)
+
+            value.on("keydown.enter", save)
+            with ui.row().classes("w-full justify-end gap-1"):
+                ui.button("Cancel", on_click=self.close_var_editor).props("flat dense no-caps")
+                ui.button("Save", icon="save", on_click=save).props("dense no-caps unelevated")
+
+    def save_variable(self, name: str, value: str, where: str, secret: bool) -> None:
+        def upsert(rows: list[KV]) -> None:
+            kv = next((v for v in rows if v.key == name), None)
+            if kv is None:
+                rows.append(KV(name, value, True, secret))
+            else:
+                kv.value, kv.enabled = value, True
+
+        if where == "env" and self.env():
+            env = self.env()
+            upsert(env.variables)
+            WS.save_environment(env)
+            if self.env_edit is not None and self.env_edit.id == env.id:  # keep the open editor in step
+                upsert(self.env_edit.variables)
+                self.edit_environment(self.env_edit)
+            label = f"environment '{env.name}'"
+        elif self.collection():
+            c = self.collection()
+            upsert(c.variables)
+            WS.save_collection(c)
+            label = f"collection '{c.name}'"
         else:
-            self.var_warning.text = ""
+            return
+        self.close_var_editor()
+        self.update_var_warning()
+        self.update_runner_check()
+        ui.notify(f"Saved {{{{{name}}}}} to {label}", type="positive", timeout=1500)
 
     # ------------------------------------------------------- sending
     async def send_current(self) -> None:
@@ -926,12 +1241,21 @@ class ClientPage:
             return
         req = self.current.clone()
         c, env = self.collection(), self.env()
+        if env and self.env_edit is not None and self.env_edit.id == env.id \
+                and self.env_edit.to_dict() != env.to_dict():
+            ui.notify(f"Environment '{env.name}' has unsaved changes on the Environments tab. Requests use the "
+                      "saved values: click Save there first.", type="warning", multi_line=True, timeout=8000)
         self.send_btn.props("loading")
         try:
             rr, res = await run.io_bound(engine.execute, req, c, env, WS.settings)
         finally:
             self.send_btn.props(remove="loading")
         self.show_result(rr, res)
+        if res.status in (401, 403):
+            self.note_label.text = (
+                f"{res.status}: the server rejected the credentials. Check: (1) the right environment is selected; "
+                "(2) the key/secret in it are saved and are for this server (district/SIS); (3) the response body "
+                "above, which usually says why; (4) the 'Request sent' tab, to compare with Postman (secrets masked).")
 
     def show_result(self, rr: engine.ResolvedRequest, res: engine.Result) -> None:
         self.last_result, self.last_resolved = res, rr

@@ -4,7 +4,8 @@
 #  First run: creates a private Python environment and installs components.
 #  After that it just opens the app in your browser. You can close the
 #  Terminal window once the browser opens; the app keeps running.
-#  (First time only: if macOS blocks it, right-click > Open > Open.)
+#  First time only: if macOS says "Apple could not verify...", click Done, then
+#  System Settings > Privacy & Security > Open Anyway.
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")" || exit 1
 

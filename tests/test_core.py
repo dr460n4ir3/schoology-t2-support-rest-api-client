@@ -192,6 +192,19 @@ def test_oneroster_get_token_debug_request(server, name):
     assert res.status == 200 and res.json()["access_token"] == "tok123"
 
 
+def test_placeholder_credentials_count_as_unset():
+    c = Collection(auth=Auth(type="oauth1", consumer_key="{{k}}", consumer_secret="{{s}}"))
+    env = Environment(variables=[KV("k", "PASTE-CONSUMER-KEY"), KV("s", "real-secret")])
+    assert missing_variables(Request(url="https://x/{{id}}"), c, env) == {"k", "id"}
+
+
+def test_pasted_credentials_are_trimmed(server):
+    c = Collection(auth=Auth(type="oauth1", consumer_key="{{k}}", consumer_secret="{{s}}"))
+    env = Environment(variables=[KV("k", "  key\n"), KV("s", " " + SECRET + " ")])
+    rr, res = engine.execute(Request(url=f"{server}/sig"), c, env, SETTINGS)
+    assert rr.auth.consumer_key == "key" and res.json()["valid"] is True
+
+
 def test_unknown_variable_is_not_sent(server):
     _, res = engine.execute(Request(url=f"{server}/echo/{{{{missing}}}}"), None, None, SETTINGS)
     assert res.status is None and "{{missing}}" in res.error

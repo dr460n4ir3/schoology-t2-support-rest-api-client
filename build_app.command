@@ -2,7 +2,8 @@
 # ---------------------------------------------------------------------------
 #  Admin only (Mac): builds a stand-alone app (no Python needed on team Macs).
 #  Output: dist/Schoology API Client.app -> zip it and share it.
-#  The app is unsigned: the first time, team members right-click > Open > Open.
+#  The app is unsigned: the first time, team members use
+#  System Settings > Privacy & Security > Open Anyway (see README).
 #  Build on the oldest macOS / the CPU type (Apple silicon vs Intel) your team uses.
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")" || exit 1
