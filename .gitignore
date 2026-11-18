@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.nicegui/
+build/
+dist/
+*.spec
+# Never commit real credentials: environments live in the user's app folder
+# (~/SchoologyAPIClient), not in the repo. Only the examples/ placeholders are tracked.
+*.env.json

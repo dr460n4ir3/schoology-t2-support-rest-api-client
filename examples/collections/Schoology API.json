@@ -1,0 +1,339 @@
+{
+  "format": "restclient-collection/1",
+  "id": "schoology-api-v1",
+  "name": "Schoology API",
+  "description": "Starter requests for the Schoology REST API v1. Auth is two-legged OAuth 1.0 using the consumer key/secret from https://<district>.schoology.com/api (set them in your environment).",
+  "variables": [
+    {
+      "key": "base_url",
+      "value": "https://api.schoology.com/v1",
+      "enabled": true,
+      "secret": false
+    }
+  ],
+  "auth": {
+    "type": "oauth1",
+    "consumer_key": "{{schoology_consumer_key}}",
+    "consumer_secret": "{{schoology_consumer_secret}}",
+    "access_token": "",
+    "token_secret": "",
+    "signature_method": "HMAC-SHA1",
+    "realm": ""
+  },
+  "items": [
+    {
+      "type": "folder",
+      "id": "758e15bfe0cd",
+      "name": "Users",
+      "description": "",
+      "items": [
+        {
+          "type": "request",
+          "id": "dd174d3e2ead",
+          "name": "Who am I (app-user-info)",
+          "method": "GET",
+          "url": "{{base_url}}/app-user-info",
+          "params": [],
+          "headers": [],
+          "body_mode": "none",
+          "body": "",
+          "form": [],
+          "auth": {
+            "type": "inherit"
+          },
+          "description": "Confirms the API keys work and shows which user/school they belong to."
+        },
+        {
+          "type": "request",
+          "id": "e7a33968ded2",
+          "name": "Get user",
+          "method": "GET",
+          "url": "{{base_url}}/users/{{user_id}}",
+          "params": [],
+          "headers": [],
+          "body_mode": "none",
+          "body": "",
+          "form": [],
+          "auth": {
+            "type": "inherit"
+          },
+          "description": "Schoology user id (not the SIS id)."
+        },
+        {
+          "type": "request",
+          "id": "5d238ff06633",
+          "name": "Find users by school UID",
+          "method": "GET",
+          "url": "{{base_url}}/users",
+          "params": [
+            {
+              "key": "school_uids",
+              "value": "{{school_uid}}",
+              "enabled": true,
+              "secret": false
+            }
+          ],
+          "headers": [],
+          "body_mode": "none",
+          "body": "",
+          "form": [],
+          "auth": {
+            "type": "inherit"
+          },
+          "description": "Look up users by their unique ID from the SIS. Comma-separate several UIDs."
+        },
+        {
+          "type": "request",
+          "id": "094bced578ac",
+          "name": "List users",
+          "method": "GET",
+          "url": "{{base_url}}/users",
+          "params": [
+            {
+              "key": "start",
+              "value": "0",
+              "enabled": true,
+              "secret": false
+            },
+            {
+              "key": "limit",
+              "value": "200",
+              "enabled": true,
+              "secret": false
+            },
+            {
+              "key": "role_ids",
+              "value": "",
+              "enabled": false,
+              "secret": false
+            },
+            {
+              "key": "building_id",
+              "value": "",
+              "enabled": false,
+              "secret": false
+            }
+          ],
+          "headers": [],
+          "body_mode": "none",
+          "body": "",
+          "form": [],
+          "auth": {
+            "type": "inherit"
+          },
+          "description": ""
+        },
+        {
+          "type": "request",
+          "id": "3b6b94472587",
+          "name": "Get user's sections",
+          "method": "GET",
+          "url": "{{base_url}}/users/{{user_id}}/sections",
+          "params": [],
+          "headers": [],
+          "body_mode": "none",
+          "body": "",
+          "form": [],
+          "auth": {
+            "type": "inherit"
+          },
+          "description": ""
+        },
+        {
+          "type": "request",
+          "id": "f8f62f66973b",
+          "name": "Update user",
+          "method": "PUT",
+          "url": "{{base_url}}/users/{{user_id}}",
+          "params": [],
+          "headers": [],
+          "body_mode": "json",
+          "body": "{\n  \"email\": \"{{email}}\"\n}",
+          "form": [],
+          "auth": {
+            "type": "inherit"
+          },
+          "description": "Changes data! Edit the body to the fields you need. In the Bulk Runner, CSV columns (user_id, email) fill the {{variables}}."
+        }
+      ]
+    },
+    {
+      "type": "folder",
+      "id": "c3dfee2c033a",
+      "name": "Schools & buildings",
+      "description": "",
+      "items": [
+        {
+          "type": "request",
+          "id": "f11c842ff73f",
+          "name": "List schools",
+          "method": "GET",
+          "url": "{{base_url}}/schools",
+          "params": [],
+          "headers": [],
+          "body_mode": "none",
+          "body": "",
+          "form": [],
+          "auth": {
+            "type": "inherit"
+          },
+          "description": ""
+        },
+        {
+          "type": "request",
+          "id": "f1877048c990",
+          "name": "Get school",
+          "method": "GET",
+          "url": "{{base_url}}/schools/{{school_id}}",
+          "params": [],
+          "headers": [],
+          "body_mode": "none",
+          "body": "",
+          "form": [],
+          "auth": {
+            "type": "inherit"
+          },
+          "description": ""
+        },
+        {
+          "type": "request",
+          "id": "38b41e1aeab2",
+          "name": "List buildings",
+          "method": "GET",
+          "url": "{{base_url}}/schools/{{school_id}}/buildings",
+          "params": [],
+          "headers": [],
+          "body_mode": "none",
+          "body": "",
+          "form": [],
+          "auth": {
+            "type": "inherit"
+          },
+          "description": ""
+        }
+      ]
+    },
+    {
+      "type": "folder",
+      "id": "9e6651c6ceb0",
+      "name": "Courses & sections",
+      "description": "",
+      "items": [
+        {
+          "type": "request",
+          "id": "633bca94a200",
+          "name": "List courses",
+          "method": "GET",
+          "url": "{{base_url}}/courses",
+          "params": [
+            {
+              "key": "start",
+              "value": "0",
+              "enabled": true,
+              "secret": false
+            },
+            {
+              "key": "limit",
+              "value": "200",
+              "enabled": true,
+              "secret": false
+            }
+          ],
+          "headers": [],
+          "body_mode": "none",
+          "body": "",
+          "form": [],
+          "auth": {
+            "type": "inherit"
+          },
+          "description": ""
+        },
+        {
+          "type": "request",
+          "id": "a05219bc5205",
+          "name": "Get course sections",
+          "method": "GET",
+          "url": "{{base_url}}/courses/{{course_id}}/sections",
+          "params": [],
+          "headers": [],
+          "body_mode": "none",
+          "body": "",
+          "form": [],
+          "auth": {
+            "type": "inherit"
+          },
+          "description": ""
+        },
+        {
+          "type": "request",
+          "id": "a5fd0d833612",
+          "name": "Get section",
+          "method": "GET",
+          "url": "{{base_url}}/sections/{{section_id}}",
+          "params": [],
+          "headers": [],
+          "body_mode": "none",
+          "body": "",
+          "form": [],
+          "auth": {
+            "type": "inherit"
+          },
+          "description": ""
+        },
+        {
+          "type": "request",
+          "id": "44f194452415",
+          "name": "Section enrollments",
+          "method": "GET",
+          "url": "{{base_url}}/sections/{{section_id}}/enrollments",
+          "params": [
+            {
+              "key": "start",
+              "value": "0",
+              "enabled": true,
+              "secret": false
+            },
+            {
+              "key": "limit",
+              "value": "200",
+              "enabled": true,
+              "secret": false
+            }
+          ],
+          "headers": [],
+          "body_mode": "none",
+          "body": "",
+          "form": [],
+          "auth": {
+            "type": "inherit"
+          },
+          "description": ""
+        }
+      ]
+    },
+    {
+      "type": "folder",
+      "id": "16121b874aff",
+      "name": "Grading",
+      "description": "",
+      "items": [
+        {
+          "type": "request",
+          "id": "3419507794ba",
+          "name": "Grading periods",
+          "method": "GET",
+          "url": "{{base_url}}/gradingperiods",
+          "params": [],
+          "headers": [],
+          "body_mode": "none",
+          "body": "",
+          "form": [],
+          "auth": {
+            "type": "inherit"
+          },
+          "description": ""
+        }
+      ]
+    }
+  ]
+}

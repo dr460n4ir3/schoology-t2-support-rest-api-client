@@ -1,0 +1,65 @@
+{
+  "format": "restclient-environment/1",
+  "id": "env-ic-oneroster12",
+  "name": "Infinite Campus - OneRoster 1.2 (example)",
+  "description": "OneRoster 1.2 uses OAuth 2.0 client credentials. Copy the exact base URL and token URL from the district's OneRoster connection in Campus.",
+  "variables": [
+    {
+      "key": "oneroster_base_url",
+      "value": "https://YOUR-DISTRICT.infinitecampus.org/campus/oneroster/YOUR-APP/ims/oneroster/rostering/v1p2",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "token_url",
+      "value": "https://YOUR-DISTRICT.infinitecampus.org/campus/oauth2/token?appName=YOUR-APP",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "client_id",
+      "value": "PASTE-CLIENT-ID",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "client_secret",
+      "value": "PASTE-CLIENT-SECRET",
+      "enabled": true,
+      "secret": true
+    },
+    {
+      "key": "school_sourcedId",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "class_sourcedId",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "user_sourcedId",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "identifier",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "username",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    }
+  ],
+  "auth": {
+    "type": "inherit"
+  }
+}

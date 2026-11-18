@@ -1,0 +1,59 @@
+{
+  "format": "restclient-environment/1",
+  "id": "env-schoology-example",
+  "name": "Schoology - Example District",
+  "description": "Copy this environment for each district. Keys come from https://<district>.schoology.com/api",
+  "variables": [
+    {
+      "key": "schoology_consumer_key",
+      "value": "PASTE-CONSUMER-KEY",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "schoology_consumer_secret",
+      "value": "PASTE-CONSUMER-SECRET",
+      "enabled": true,
+      "secret": true
+    },
+    {
+      "key": "user_id",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "school_uid",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "school_id",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "course_id",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "section_id",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "email",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    }
+  ],
+  "auth": {
+    "type": "inherit"
+  }
+}

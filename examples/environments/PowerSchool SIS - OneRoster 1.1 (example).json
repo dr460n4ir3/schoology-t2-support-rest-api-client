@@ -1,0 +1,65 @@
+{
+  "format": "restclient-environment/1",
+  "id": "env-ps-oneroster11",
+  "name": "PowerSchool SIS - OneRoster 1.1 (example)",
+  "description": "PowerSchool OneRoster uses OAuth 2.0 client credentials. Get the client id/secret from the district's OneRoster plugin. Confirm the URLs with the district.",
+  "variables": [
+    {
+      "key": "oneroster_base_url",
+      "value": "https://YOUR-SERVER.powerschool.com/ims/oneroster/v1p1",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "token_url",
+      "value": "https://YOUR-SERVER.powerschool.com/oauth/access_token",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "client_id",
+      "value": "PASTE-CLIENT-ID",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "client_secret",
+      "value": "PASTE-CLIENT-SECRET",
+      "enabled": true,
+      "secret": true
+    },
+    {
+      "key": "school_sourcedId",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "class_sourcedId",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "user_sourcedId",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "identifier",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "username",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    }
+  ],
+  "auth": {
+    "type": "inherit"
+  }
+}

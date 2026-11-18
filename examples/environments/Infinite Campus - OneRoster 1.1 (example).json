@@ -1,0 +1,65 @@
+{
+  "format": "restclient-environment/1",
+  "id": "env-ic-oneroster11",
+  "name": "Infinite Campus - OneRoster 1.1 (example)",
+  "description": "Infinite Campus OneRoster 1.1 signs requests with OAuth 1.0 HMAC-SHA256, so this environment overrides the collection auth. Copy the exact base URL and key/secret from the district's OneRoster connection in Campus.",
+  "variables": [
+    {
+      "key": "oneroster_base_url",
+      "value": "https://YOUR-DISTRICT.infinitecampus.org/campus/oneroster/YOUR-APP/ims/oneroster/v1p1",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "client_id",
+      "value": "PASTE-CLIENT-KEY",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "client_secret",
+      "value": "PASTE-CLIENT-SECRET",
+      "enabled": true,
+      "secret": true
+    },
+    {
+      "key": "school_sourcedId",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "class_sourcedId",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "user_sourcedId",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "identifier",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    },
+    {
+      "key": "username",
+      "value": "",
+      "enabled": true,
+      "secret": false
+    }
+  ],
+  "auth": {
+    "type": "oauth1",
+    "consumer_key": "{{client_id}}",
+    "consumer_secret": "{{client_secret}}",
+    "access_token": "",
+    "token_secret": "",
+    "signature_method": "HMAC-SHA256",
+    "realm": ""
+  }
+}
