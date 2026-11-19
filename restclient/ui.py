@@ -1,11 +1,12 @@
 """The web UI (NiceGUI). Runs locally and opens in the browser at http://127.0.0.1:<port>.
 
 Layout:  header (environment picker, settings)  |  left: collections tree
-         main tabs: Request · Bulk Runner · Environments · AI Assistant
+         main tabs: Request · Bulk Runner · Environments · Database · Assistant · AI & Help
 """
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import logging
@@ -13,14 +14,16 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from nicegui import app, run, ui
 
-from . import APP_NAME, __version__, engine, postman, runner
+from . import APP_NAME, __version__, copilot_setup, engine, launcher, postman, runner
 from .assistant import MAX_TOOL_ROUNDS, Assistant
-from .config import app_home, save_settings
+from .config import app_home, load_settings, save_settings
 from .knowledge import SUPPORTED as KB_TYPES, open_kb
+from . import ollama_service
 from .ollama import DOWNLOAD_URL as OLLAMA_DOWNLOAD_URL, Ollama, OllamaError
 from .models import (AUTH_TYPES, BODY_MODES, METHODS, OAUTH1_SIGNATURES, KV, Auth, Collection, Environment,
                      Folder, Request)
@@ -30,6 +33,7 @@ from .workspace import Workspace
 log = logging.getLogger(__name__)
 
 WS: Workspace = None  # type: ignore[assignment]  # created in start()
+DB_RUNNER = launcher.StepRunner()  # one per app, so a page reload keeps the sign-in output
 
 METHOD_COLORS = {"GET": "text-green-8", "POST": "text-orange-9", "PUT": "text-blue-8", "PATCH": "text-purple-7",
                  "DELETE": "text-red-8", "HEAD": "text-grey-7", "OPTIONS": "text-grey-7"}
@@ -526,6 +530,7 @@ class ClientPage:
             ui.tab("Request", icon="send")
             ui.tab("Bulk Runner", icon="playlist_play")
             ui.tab("Environments", icon="tune")
+            ui.tab("Database", icon="storage")
             ui.tab("Assistant", icon="forum")
             ui.tab("AI & Help", icon="smart_toy")
         with ui.tab_panels(self.tabs, value="Request").classes("w-full bg-transparent") \
@@ -536,6 +541,8 @@ class ClientPage:
                 self.build_runner_panel()
             with ui.tab_panel("Environments").classes("p-0 pt-2"):
                 self.build_env_panel()
+            with ui.tab_panel("Database").classes("p-0 pt-2"):
+                self.build_db_panel()
             with ui.tab_panel("Assistant").classes("p-0 pt-2"):
                 self.build_assistant_panel()
             with ui.tab_panel("AI & Help").classes("p-0 pt-2"):
@@ -1595,6 +1602,222 @@ class ClientPage:
         except OSError as exc:
             ui.notify(f"{path} ({exc})")
 
+    # ================================================================ database
+    def build_db_panel(self) -> None:
+        self.db_filter = ""
+        self.db_items: list[dict] = []
+        self.db_seen = 0
+        self.db_was_running = DB_RUNNER.running
+        with ui.row().classes("w-full gap-4 items-start no-wrap"):
+            with ui.card().classes("flex-1 min-w-[420px]").props("flat bordered"):
+                with ui.row().classes("w-full items-center no-wrap"):
+                    ui.icon("storage", color="primary")
+                    ui.label("Databases").classes("text-lg font-semibold")
+                    ui.space()
+                    ui.button(icon="refresh", on_click=self.load_db_items).props("flat round dense") \
+                        .tooltip("Reload the list")
+                    ui.button(icon="folder_open", on_click=self.open_db_folder).props("flat round dense") \
+                        .tooltip("Open the connections folder")
+                ui.input(placeholder="Filter databases…", on_change=self.on_db_filter) \
+                    .props("dense outlined clearable").classes("w-full")
+                with ui.scroll_area().classes("w-full").style("height: calc(100vh - 290px)"):
+                    self.render_db_list()
+            with ui.column().classes("w-[420px] gap-3"):
+                with ui.card().classes("w-full").props("flat bordered"):
+                    self.render_db_signin()
+                    self.db_log = ui.log(max_lines=2000).classes("w-full h-56 text-xs")
+                    self.db_log.push("\n".join(DB_RUNNER.lines) or "Output from the sign-in commands shows here.")
+                    self.db_seen = DB_RUNNER.count
+                with ui.card().classes("w-full").props("flat bordered"):
+                    self.build_db_setup()
+        self.load_db_items()
+        ui.timer(0.5, self.poll_db)
+        ui.timer(20, self.load_db_items)
+
+    def db_configured(self) -> bool:
+        return bool(WS.settings.db_connections_dir.strip())
+
+    def load_db_items(self) -> None:
+        self.db_items = launcher.list_connections(WS.settings.db_connections_dir) if self.db_configured() else []
+        self.render_db_list.refresh()
+
+    def on_db_filter(self, e) -> None:
+        self.db_filter = (e.value or "").strip().lower()
+        self.render_db_list.refresh()
+
+    def open_db_folder(self) -> None:
+        folder = Path(WS.settings.db_connections_dir).expanduser()
+        if not self.db_configured() or not folder.is_dir():
+            ui.notify("Set the connections folder under Setup first.", type="warning")
+            return
+        self.open_folder(folder)
+
+    @ui.refreshable_method
+    def render_db_list(self) -> None:
+        s = WS.settings
+        if not self.db_configured():
+            ui.markdown(
+                "Open a database in your database app (e.g. **Sequel Ace**) with one click.\n\n"
+                "1. Under **Setup** (right), type the commands you normally run in Terminal to sign in, "
+                "one per line, and the folder they run in.\n"
+                "2. Set the **connections folder**: the folder where the sign-in puts one file per database.\n"
+                "3. Click **Sign in**, then click a database here.\n\n"
+                "These settings are saved only on this computer.").classes("text-sm")
+            return
+        folder = Path(s.db_connections_dir).expanduser()
+        if not folder.is_dir():
+            ui.label(f"Folder not found: {folder}").classes("text-orange-9 text-sm")
+            ui.label("Sign in first (it may create the folder), or fix the path under Setup.") \
+                .classes("text-xs text-grey-7")
+            return
+        items = self.db_items
+        if not items:
+            ui.label("No connection files yet. Click Sign in.").classes("text-grey-7 text-sm")
+            return
+        newest = max(i["modified"] for i in items)
+        ui.label(f"{len(items)} databases · files updated {launcher.age_text(time.time() - newest)}") \
+            .classes("text-xs text-grey-7")
+        shown = [i for i in items if not self.db_filter
+                 or self.db_filter in f"{i['group']} {i['name']}".lower()]
+        with ui.list().props("dense separator").classes("w-full"):
+            for item in shown[:500]:
+                with ui.item(on_click=lambda i=item: self.open_db_item(i)).classes("req-item").props("clickable"):
+                    with ui.item_section().props("avatar"):
+                        ui.icon("dns", color="primary", size="xs")
+                    with ui.item_section():
+                        ui.item_label(item["name"])
+                        if item["group"]:
+                            ui.item_label(item["group"]).props("caption")
+                    with ui.item_section().props("side"):
+                        ui.icon("open_in_new", size="xs").tooltip(
+                            f"Open in {s.db_open_with or 'its default app'}")
+        if len(shown) > 500:
+            ui.label(f"Showing 500 of {len(shown)}. Type in the filter to narrow it down.") \
+                .classes("text-xs text-grey-7")
+        elif not shown:
+            ui.label("Nothing matches the filter.").classes("text-grey-7 text-sm")
+
+    async def open_db_item(self, item: dict) -> None:
+        ui.notify(f"Opening {item['name']}…", timeout=1500)
+        try:
+            # off the UI thread: on Windows, a file type with no app shows a "Pick an app" box that blocks the call
+            await run.io_bound(launcher.open_path, item["path"],
+                               WS.settings.db_open_with if sys.platform == "darwin" else "")
+        except OSError as e:
+            ui.notify(f"Couldn't open {item['file']}: {e}", type="negative", multi_line=True)
+
+    @ui.refreshable_method
+    def render_db_signin(self) -> None:
+        s = WS.settings
+        commands = launcher.parse_commands(s.db_signin_commands)
+        with ui.row().classes("w-full items-center no-wrap"):
+            ui.label("Sign in").classes("text-lg font-semibold")
+            ui.space()
+            if DB_RUNNER.running:
+                ui.button("Stop", icon="stop", on_click=self.stop_db_signin) \
+                    .props("flat dense no-caps color=negative")
+            else:
+                ui.button("Sign in", icon="login", on_click=self.start_db_signin) \
+                    .props("dense no-caps color=primary").set_enabled(bool(commands))
+        if not commands:
+            ui.label("Add your sign-in commands under Setup.").classes("text-xs text-grey-7")
+            return
+        if s.db_use_terminal:
+            ui.label("Runs in a Terminal window. Come back here when it's done and refresh the list.") \
+                .classes("text-xs text-grey-7")
+        icons = {"waiting": ("schedule", "grey"), "ok": ("check_circle", "green"), "failed": ("error", "negative"),
+                 "stopped": ("stop_circle", "orange"), "skipped": ("remove_circle_outline", "grey")}
+        steps = DB_RUNNER.steps if [x["command"] for x in DB_RUNNER.steps] == commands \
+            else [{"command": c, "status": "waiting"} for c in commands]
+        for n, step in enumerate(steps, 1):
+            with ui.row().classes("w-full items-start no-wrap gap-2"):
+                if step["status"] == "running":
+                    ui.spinner(size="xs").classes("mt-1")
+                else:
+                    icon, color = icons.get(step["status"], icons["waiting"])
+                    ui.icon(icon, color=color, size="xs").classes("mt-1")
+                ui.label(f"{n}. {step['command']}").classes("text-xs font-mono break-all")
+        if DB_RUNNER.running:
+            ui.label("If a browser window opens, finish signing in there, then come back.") \
+                .classes("text-xs text-grey-7")
+
+    def start_db_signin(self) -> None:
+        s = WS.settings
+        commands = launcher.parse_commands(s.db_signin_commands)
+        try:
+            if s.db_use_terminal:
+                launcher.open_in_terminal(commands, s.db_tool_folder)
+                ui.notify("Opened a Terminal window", timeout=2000)
+                return
+            DB_RUNNER.start(commands, s.db_tool_folder)
+        except (OSError, ValueError, RuntimeError) as e:
+            ui.notify(str(e), type="negative", multi_line=True)
+            return
+        self.db_log.clear()
+        self.db_seen = 0
+        self.db_was_running = True
+        self.render_db_signin.refresh()
+
+    def stop_db_signin(self) -> None:
+        DB_RUNNER.stop()
+        ui.notify("Stopping…", timeout=1000)
+
+    def poll_db(self) -> None:
+        lines = DB_RUNNER.new_lines(self.db_seen)
+        if lines:
+            self.db_log.push("\n".join(lines))
+            self.db_seen = DB_RUNNER.count
+        if DB_RUNNER.running:
+            self.db_was_running = True
+            self.render_db_signin.refresh()
+        elif self.db_was_running:
+            self.db_was_running = False
+            self.render_db_signin.refresh()
+            self.load_db_items()
+            if any(x["status"] == "failed" for x in DB_RUNNER.steps):
+                ui.notify("Sign-in failed. See the output.", type="negative")
+            elif DB_RUNNER.steps and all(x["status"] == "ok" for x in DB_RUNNER.steps):
+                ui.notify("Signed in. Pick a database.", type="positive")
+
+    def build_db_setup(self) -> None:
+        s = WS.settings
+        draft = {k: getattr(s, k) for k in ("db_tool_folder", "db_signin_commands", "db_connections_dir",
+                                            "db_open_with", "db_use_terminal")}
+        with ui.expansion("Setup", icon="settings", value=not self.db_configured()).classes("w-full") \
+                .props("dense"):
+            ui.label("Saved only on this computer, in your settings file.").classes("text-xs text-grey-7")
+            ui.input("Folder the commands run in", value=draft["db_tool_folder"],
+                     placeholder="e.g. ~/Downloads/your-access-tool",
+                     on_change=lambda e: draft.update(db_tool_folder=e.value)) \
+                .props("outlined dense").classes("w-full")
+            ui.textarea("Sign-in commands (one per line, run in order)", value=draft["db_signin_commands"],
+                        placeholder="e.g.\naws sso login --profile your-profile\nyour-access-command",
+                        on_change=lambda e: draft.update(db_signin_commands=e.value)) \
+                .props("outlined dense autogrow").classes("w-full font-mono")
+            ui.input("Connections folder (one file per database)", value=draft["db_connections_dir"],
+                     placeholder="e.g. ~/Documents/your-connections",
+                     on_change=lambda e: draft.update(db_connections_dir=e.value)) \
+                .props("outlined dense").classes("w-full")
+            if sys.platform == "darwin":
+                ui.input("Open with (Mac app name, blank = the file's default app)", value=draft["db_open_with"],
+                         placeholder="Sequel Ace", on_change=lambda e: draft.update(db_open_with=e.value)) \
+                    .props("outlined dense").classes("w-full")
+            ui.switch("Run in a Terminal window instead (use this if a command asks you to type something)",
+                      value=draft["db_use_terminal"], on_change=lambda e: draft.update(db_use_terminal=e.value)) \
+                .classes("text-sm")
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Save", icon="save", on_click=lambda: self.save_db_setup(draft)).props("no-caps dense")
+
+    def save_db_setup(self, draft: dict) -> None:
+        for key, value in draft.items():
+            if isinstance(value, str) and key != "db_signin_commands":
+                value = value.strip()
+            setattr(WS.settings, key, value)
+        save_settings(WS.settings)
+        self.load_db_items()
+        self.render_db_signin.refresh()
+        ui.notify("Saved", type="positive", timeout=1000)
+
     # ============================================================ environments
     def build_env_panel(self) -> None:
         with ui.row().classes("w-full no-wrap gap-4 items-start"):
@@ -1716,7 +1939,8 @@ class ClientPage:
     def build_assistant_panel(self) -> None:
         self.assistant: Assistant | None = None
         self.chat_busy = False
-        self.ai_info: dict = {"version": None, "models": [], "checked": False}
+        self.ai_info: dict = {"version": None, "models": [], "checked": False, "installed": False}
+        self.ai_switching = ""  # "starting" / "stopping" while the Start/Stop button works
         self.pulling: dict = {}  # model -> (status, fraction)
         with ui.row().classes("w-full gap-4 items-start no-wrap"):
             with ui.card().classes("flex-1 min-w-[460px] p-0 gap-0").props("flat bordered"):
@@ -1758,6 +1982,10 @@ class ClientPage:
 
     # ------------------------------------------------------------- status card
     async def refresh_ai_status(self) -> None:
+        # pick up the model the "Install Local AI" script saved while the app was already open
+        disk = load_settings()
+        for attr in ("ollama_url", "ollama_chat_model", "ollama_embed_model"):
+            setattr(WS.settings, attr, getattr(disk, attr))
         client = Ollama(WS.settings.ollama_url)
         version = await run.io_bound(client.version)
         models = []
@@ -1766,7 +1994,8 @@ class ClientPage:
                 models = await run.io_bound(client.models)
             except OllamaError:
                 pass
-        self.ai_info = {"version": version, "models": models, "checked": True}
+        installed = bool(version) or await run.io_bound(ollama_service.is_installed)
+        self.ai_info = {"version": version, "models": models, "checked": True, "installed": installed}
         self.render_ai_status.refresh()
 
     @ui.refreshable_method
@@ -1779,6 +2008,17 @@ class ClientPage:
         if not info["checked"]:
             ui.label("Checking...").classes("text-sm text-grey-7")
             return
+        if self.ai_switching:
+            with ui.row().classes("items-center gap-2"):
+                ui.spinner(size="sm")
+                ui.label(f"{self.ai_switching.capitalize()} Ollama…").classes("text-sm")
+            return
+        local = self.ollama_is_local()
+        if not info["version"] and info["installed"] and local:
+            ui.label("Ollama is off.").classes("text-orange-9 text-sm font-medium")
+            ui.button("Start Ollama", icon="play_arrow", on_click=self.start_ollama)                 .props("no-caps color=primary")
+            ui.label("Starts the local AI. It uses a lot of memory while it's on; click Stop when you're done.")                 .classes("text-xs text-grey-7")
+            return
         if not info["version"]:
             ui.label("Ollama isn't running on this computer.").classes("text-orange-9 text-sm font-medium")
             ui.markdown(
@@ -1790,10 +2030,14 @@ class ClientPage:
             ).classes("text-sm")
             return
         installed = info["models"]
-        ui.label(f"Ollama {info['version']} is running").classes("text-green-8 text-sm")
+        with ui.row().classes("w-full items-center no-wrap"):
+            ui.label(f"Ollama {info['version']} is running").classes("text-green-8 text-sm flex-grow")
+            if local:
+                ui.button("Stop", icon="stop", on_click=self.stop_ollama)                     .props("flat dense no-caps color=negative").tooltip("Stop Ollama and free its memory")
         for attr, label, hint in (
-                ("ollama_chat_model", "Chat model", "llama3.1:8b needs ~8 GB free RAM; llama3.2:3b for smaller laptops. "
-                                                    "qwen3:8b is also good at API calls."),
+                ("ollama_chat_model", "Chat model", "qwen2.5:3b: fast, for laptops without a graphics card "
+                                                    "(e.g. Intel Macs). llama3.1:8b: for Apple-chip Macs or "
+                                                    "PCs with an NVIDIA card."),
                 ("ollama_embed_model", "Document search model", "Turns documents into searchable vectors "
                                                                 "(nomic-embed-text, ~270 MB).")):
             current = getattr(WS.settings, attr)
@@ -1817,6 +2061,45 @@ class ClientPage:
                      f"'{WS.settings.ollama_embed_model}'.").classes("text-xs text-orange-9")
         ui.label("Safety switches on the AI & Help tab apply here too (read-only by default).") \
             .classes("text-xs text-grey-7")
+
+    def ollama_is_local(self) -> bool:
+        return any(h in WS.settings.ollama_url for h in ("localhost", "127.0.0.1", "[::1]"))
+
+    async def _wait_for_ollama(self, running: bool, seconds: int) -> bool:
+        client = Ollama(WS.settings.ollama_url)
+        for _ in range(seconds * 2):
+            if bool(await run.io_bound(client.version)) == running:
+                return True
+            await asyncio.sleep(0.5)
+        return False
+
+    async def start_ollama(self) -> None:
+        self.ai_switching = "starting"
+        self.render_ai_status.refresh()
+        try:
+            await run.io_bound(ollama_service.start)
+            ok = await self._wait_for_ollama(True, 45)
+            if not ok:
+                ui.notify("Ollama didn't start. Try opening the Ollama app yourself.", type="warning")
+        except OSError as e:
+            ui.notify(f"Couldn't start Ollama: {e}", type="negative", multi_line=True)
+        finally:
+            self.ai_switching = ""
+            await self.refresh_ai_status()
+
+    async def stop_ollama(self) -> None:
+        if self.chat_busy or self.pulling:
+            ui.notify("Wait for the current answer or download to finish first.", type="warning")
+            return
+        self.ai_switching = "stopping"
+        self.render_ai_status.refresh()
+        try:
+            await run.io_bound(ollama_service.stop)
+            if not await self._wait_for_ollama(False, 15):
+                ui.notify("Ollama is still running (it may be set to restart by itself).", type="warning")
+        finally:
+            self.ai_switching = ""
+            await self.refresh_ai_status()
 
     def set_ai_model(self, attr: str, value) -> None:
         value = (value or "").strip()
@@ -2038,14 +2321,9 @@ class ClientPage:
             self.chat_scroll_bottom()
 
     def build_ai_panel(self) -> None:
-        py = Path(sys.executable)
-        if py.name.lower() == "pythonw.exe":
-            py = py.with_name("python.exe")
-        repo = Path(__file__).resolve().parent.parent
+        py = copilot_setup.python_path()
         frozen = getattr(sys, "frozen", False)
-        vscode = json.dumps({"servers": {"schoology-api-client": {
-            "type": "stdio", "command": str(py), "args": ["-m", "restclient.mcp_server"],
-            "cwd": str(repo)}}}, indent=2)
+        mac = sys.platform == "darwin"
         mcpo = f'uvx mcpo --port 8000 --api-key "CHANGE-ME" -- "{py}" -m restclient.mcp_server'
 
         with ui.row().classes("w-full gap-4 items-start"):
@@ -2058,9 +2336,32 @@ class ClientPage:
                 if frozen:
                     ui.label("Note: the AI connection needs the Python (source) install of this app, not the stand-alone build.") \
                         .classes("text-orange-9 text-sm")
-                ui.markdown("**GitHub Copilot (VS Code, Agent mode)**: save as `.vscode/mcp.json` in any folder "
-                            "you open in VS Code (or add to your user MCP settings):")
-                ui.code(vscode, language="json").classes("w-full")
+                ui.label("GitHub Copilot in VS Code").classes("text-base font-semibold mt-2")
+                with ui.row().classes("items-center gap-2"):
+                    ui.button("Set up Copilot for me", icon="auto_fix_high", on_click=self.setup_copilot) \
+                        .props("no-caps color=primary").set_enabled(not frozen)
+                    ui.label("then quit and reopen VS Code").classes("text-sm text-grey-7")
+                save_folder = ("press **⌘ Shift G**, type `~/.copilot` and press **Enter**" if mac else
+                               "type `%USERPROFILE%\\.copilot` in the folder box at the top and press **Enter**")
+                ui.markdown(
+                    "**Or do it by hand:**\n\n"
+                    "1. In VS Code: **File → New Text File**.\n"
+                    "2. Copy the box below (copy icon, top right) and paste it in. Your paths are already filled in.\n"
+                    f"3. Save it ({'**⌘S**' if mac else '**Ctrl+S**'}). In the Save box, {save_folder}, name the file "
+                    f"`mcp-config.json` and click **Save**. Full path: `{copilot_setup.copilot_config_path()}`.\n"
+                    "   - If that file already exists with other servers, add only the `\"schoology-api-client\"` "
+                    "part inside `\"mcpServers\"` (or use the button above, which does that for you).\n"
+                    "4. Quit and reopen VS Code.\n"
+                    f"5. Open Copilot Chat ({'**⌃⌘I**' if mac else '**Ctrl+Alt+I**'}), change the mode at the bottom "
+                    "from **Ask** to **Agent**, and ask *\"Which collections and environments do I have?\"*. "
+                    "Click **Allow** when Copilot asks to use a tool.")
+                ui.code(copilot_setup.copilot_config_text(), language="json").classes("w-full")
+                with ui.expansion("Older VS Code (no 'Copilot global' file)", icon="history").classes("w-full") \
+                        .props("dense"):
+                    ui.markdown(
+                        f"Press **{'⌘' if mac else 'Ctrl+'} Shift P**, type `>MCP: Open User Configuration` (start "
+                        "with the `>`), press **Enter**, then replace everything in the `mcp.json` that opens with:")
+                    ui.code(copilot_setup.vscode_config_text(), language="json").classes("w-full")
                 ui.markdown("**Open WebUI / other chatbots via mcpo** (turns the MCP server into an OpenAPI "
                             "tool server). Run this, then add `http://localhost:8000` as a *Tool Server*:")
                 ui.code(mcpo, language="bash").classes("w-full")
@@ -2092,6 +2393,16 @@ class ClientPage:
                     ui.button("Open data folder", icon="folder_open",
                               on_click=lambda: self.open_folder(app_home())).props("flat no-caps")
                 ui.label(f"Version {__version__}").classes("text-xs text-grey-6")
+
+    def setup_copilot(self) -> None:
+        try:
+            path, backup = copilot_setup.install_copilot_config()
+        except (OSError, ValueError) as e:
+            ui.notify(f"Couldn't set up Copilot: {e}", type="negative", multi_line=True, timeout=15000)
+            return
+        note = f" (your old file was backed up to {backup.name})" if backup else ""
+        ui.notify(f"Done: saved {path}{note}. Quit and reopen VS Code, then use Copilot Chat in Agent mode.",
+                  type="positive", multi_line=True, timeout=12000)
 
     def _set_setting(self, name: str, value) -> None:
         setattr(WS.settings, name, value)

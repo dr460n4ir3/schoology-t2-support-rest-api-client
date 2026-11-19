@@ -44,7 +44,12 @@ A lightweight Postman replacement for the PS SYG Support team. Written in Python
    It searches documents you add (PDF/Word/text) and calls the API with your saved requests.
    First time: double-click **`Install Local AI (optional).bat`** (Mac: **`.command`**). It downloads
    about 2–5 GB, so run it on a good connection.
-6. Close the browser tab when you're done. The ⏻ button (top right) fully stops the app.
+6. **Database** tab (optional): one-click sign-in and a list of your database connection files.
+   Under **Setup**, type the commands you normally run in Terminal to sign in (one per line), the folder
+   they run in, and the folder where the sign-in puts one connection file per database. Then click
+   **Sign in** (a browser window may open to sign in) and click a database to open it in your
+   database app (e.g. Sequel Ace). These settings stay on your computer.
+7. Close the browser tab when you're done. The ⏻ button (top right) fully stops the app.
 
 Your files are in `C:\Users\<you>\SchoologyAPIClient` on Windows or `/Users/<you>/SchoologyAPIClient` on
 a Mac (collections, environments, results, logs).
@@ -111,9 +116,19 @@ The MCP server (`restclient/mcp_server.py`) exposes these tools: `list_collectio
 `send_http_request` (ad-hoc, off by default), and `search_knowledge_base` (needs the local AI). It reads the same collections/environments as the app.
 The **AI & Help** tab shows ready-to-copy config with the right paths for that PC.
 
-- **GitHub Copilot (VS Code, Agent mode)**: this repo includes `.vscode/mcp.json`. Open the folder in
-  VS Code, start the `schoology-api-client` server (Mac: `schoology-api-client-mac`) from the MCP view, and
-  use Agent mode.
+- **GitHub Copilot (VS Code, Agent mode)**: on the **AI & Help** tab, click **Set up Copilot for me**, then
+  quit and reopen VS Code. That adds the server to the "Copilot global" file `~/.copilot/mcp-config.json`
+  (Windows: `%USERPROFILE%\.copilot\mcp-config.json`), keeping any other servers in it and backing up the old
+  file. To do it by hand: in VS Code **File → New Text File**, paste the box from the AI & Help tab (paths
+  already filled in), and save it at that path (Mac Save box: **⌘ Shift G**, `~/.copilot`). Then open Copilot
+  Chat, switch to **Agent** mode and ask *"Which collections and environments do I have?"*.
+  ```json
+  {"mcpServers": {"schoology-api-client": {"type": "local", "command": "/path/to/repo/.venv/bin/python",
+    "args": ["-m", "restclient.mcp_server"], "env": {"PYTHONPATH": "/path/to/repo"}, "tools": ["*"]}}}
+  ```
+  Older VS Code versions don't have the Copilot global file: use **⌘/Ctrl Shift P** →
+  `>MCP: Open User Configuration` and the "Older VS Code" box on the AI & Help tab (`"servers"` format).
+  This repo also includes `.vscode/mcp.json` for when the repo folder itself is open in VS Code.
 - **mcpo → Open WebUI (or any chatbot that supports OpenAPI tools)**:
   ```bat
   uvx mcpo --port 8000 --api-key "CHANGE-ME" -- "C:\path\to\repo\.venv\Scripts\python.exe" -m restclient.mcp_server
@@ -144,18 +159,38 @@ documents and API responses never leave the PC. It is the "RAG + API calls in on
   `search_knowledge_base`, ...) with the same safety switches. `create_request` is not offered.
 - **Install**: `Install Local AI (optional).bat` (Windows: winget, or the official installer as a fallback),
   `Install Local AI (optional).command` (Mac), or `./install_local_ai.sh [model]` (Mac/Linux, bash).
-  They install Ollama, pick `llama3.1:8b` (16 GB+ RAM) or `llama3.2:3b`, pull `nomic-embed-text`
-  and save the choice in settings. Models can also be switched and downloaded from the Assistant tab.
-- **Model choice matters**: small models (3B) answer from documents fine but are unreliable at choosing API
-  calls. Use an 8B tool-calling model (`llama3.1:8b`, `qwen3:8b`) or larger for API questions.
+  They install Ollama, pick a chat model, pull `nomic-embed-text` and save the choice in settings:
+  `llama3.1:8b` on Apple-chip Macs / Linux with 16 GB+ or Windows PCs with an NVIDIA card, otherwise
+  `qwen2.5:3b` (Intel Macs and laptops without a graphics card run models on the CPU, where an 8B model
+  takes minutes per answer). Models can also be switched and downloaded from the Assistant tab, and
+  Ollama can be started/stopped there (Stop frees its memory).
+- **Model choice**: on our test set (user lookups, follow-ups, a runbook question, a missing user, app
+  how-tos, "what do I have") `qwen2.5:3b` and `llama3.1:8b` both answer 7/7; `llama3.2:3b` invents API data,
+  so don't use it. What makes small models reliable: the app only offers API tools when the question is a
+  real lookup (`needs_tools`), lists only the saved requests that fit the selected environment, and fixes
+  mixed-up request names before calling the API. A short app guide in the prompt answers how-to questions.
 - No LangChain or vector database is needed: plain HTTP to Ollama plus a dot-product search
   (`restclient/ollama.py`, `knowledge.py`, `assistant.py`). The tools also appear in MCP as
   `search_knowledge_base`, so Copilot can use the knowledge base too.
 
+### Database tab (sign-in launcher)
+A generic launcher for "run our sign-in scripts, then open a connection file" workflows; the app has no
+knowledge of any company tool, and nothing about one belongs in this repo.
+- `db_signin_commands` run one at a time in `db_tool_folder` (added to `PATH`, with `bin/`), in the
+  user's login shell (`$SHELL -l -i -c`, so aliases and `~/.zshrc` PATH work), with this app's own Python
+  removed from the environment. The run stops at the first failing command. A command may leave a background
+  process running (e.g. a tunnel); the next step still starts. Commands that ask for typed input: turn on
+  `db_use_terminal` to run them in a Terminal window instead.
+- `db_connections_dir` is listed (subfolders become groups; bundles such as `.spfs` count as one item).
+  Clicking one opens it like a double-click, or with `db_open_with` on a Mac (e.g. `Sequel Ace`).
+  The app never reads the connection files, so it never sees database passwords.
+- Output is kept in memory only (not logged), since sign-in tools can print sensitive details.
+
 ### Settings (`~/SchoologyAPIClient/settings.json`)
 `collections_dir`, `environments_dir`, `results_dir`, `timeout_seconds`, `verify_ssl`,
 `use_system_certificates` (uses the Windows certificate store / macOS Keychain via `truststore`; needed
-behind corporate SSL inspection), `port` (default 8765), plus the MCP switches above.
+behind corporate SSL inspection), `port` (default 8765), plus the MCP switches, Ollama and Database tab
+settings above (`db_*`, blank by default).
 
 ### Project layout
 ```
@@ -172,11 +207,15 @@ restclient/
   variables.py            {{variable}} substitution and precedence
   storage.py, workspace.py  load/save files
   postman.py              Postman import/export
+  launcher.py             Database tab: run sign-in commands, list/open connection files
+  copilot_setup.py        writes the Copilot global MCP file (AI & Help tab button)
   ui.py                   NiceGUI interface
   mcp_server.py           AI tools (MCP)
   cli.py                  command line
 examples/                 starter collections, example environments, sample CSVs
 tests/test_core.py        tests against a local mock API (OAuth1/2, paging, runner, Postman)
+tests/test_assistant.py   local AI assistant + knowledge base (fake Ollama)
+tests/test_launcher.py    Database tab command runner and connection list
 ```
 
 ### Tests

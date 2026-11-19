@@ -50,8 +50,9 @@ set "MODEL=%~1"
 if not "%MODEL%"=="" goto pull
 set "RAM=16"
 for /f %%m in ('powershell -NoProfile -Command "[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB)"') do set "RAM=%%m"
-set "MODEL=llama3.1:8b"
-if %RAM% LSS 15 set "MODEL=llama3.2:3b"
+rem An 8B model needs a graphics card (NVIDIA) to be quick; without one qwen2.5:3b is about 3x faster.
+set "MODEL=qwen2.5:3b"
+where nvidia-smi >nul 2>&1 && if %RAM% GEQ 15 set "MODEL=llama3.1:8b"
 echo.
 echo This computer has %RAM% GB of RAM, so the chat model will be %MODEL%.
 

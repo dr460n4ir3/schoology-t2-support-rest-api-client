@@ -177,3 +177,54 @@ def test_assistant_blocks_unknown_tools(tmp_path):
     a.begin_turn("hi")
     name, _, result = a.call_tool({"function": {"name": "create_request", "arguments": {}}})
     assert "Unknown tool" in json.loads(result)["error"]
+
+
+def test_request_labels_show_the_ids_a_request_needs():
+    from restclient.models import KV, Request
+    r = Request(name="Get user's sections", url="{{base_url}}/users/{{user_id}}/sections",
+                params=[KV("limit", "{{limit}}"), KV("start", "{{start_index}}")])
+    assert asst._request_label(["Users"], r) == "Users/Get user's sections (start_index, user_id)"
+    assert asst._request_label([], Request(name="Make", method="POST", url="{{base_url}}/x")) == "[POST] Make"
+
+
+def test_system_prompt_includes_the_app_guide(tmp_path):
+    prompt = asst.Assistant(Settings(knowledge_dir=str(tmp_path))).system_prompt()
+    assert "Bulk Runner" in prompt and "APP GUIDE" in prompt
+
+
+def test_tools_are_only_offered_for_real_lookups():
+    assert asst.needs_tools("Look up Schoology user 12345")
+    assert asst.needs_tools("find user Maria Lopez")
+    assert asst.needs_tools("Which sections is that user enrolled in?", had_tool_results=True)
+    assert not asst.needs_tools("Which sections is that user enrolled in?")  # nothing looked up yet
+    assert not asst.needs_tools("How do I run a CSV of user ids through a request?")
+    assert not asst.needs_tools("What does error SYG-ROSTER-409 mean?")
+    assert not asst.needs_tools("which collection env do i have")
+
+
+def test_request_names_copied_with_their_label_are_cleaned():
+    assert asst._clean_request_name("[POST] Users/Get user (user_id)") == "Users/Get user"
+    assert asst._clean_request_name("Users/Get user") == "Users/Get user"
+
+
+def test_prompt_lists_only_requests_for_the_selected_environment(tmp_path):
+    from restclient.workspace import Workspace
+    ws = Workspace()  # seeds the example collections/environments into the test home
+    names = [c.name for c in asst.matching_collections(ws, "Schoology - Example District")]
+    assert names == ["Schoology API"]
+    assert {c.name for c in asst.matching_collections(ws, None)} == {c.name for c in ws.collections}
+    prompt = asst.Assistant(Settings(knowledge_dir=str(tmp_path)), "Schoology - Example District").system_prompt()
+    assert "Users/Get user's sections (user_id)" in prompt and "Enrollments for class" not in prompt
+    assert "OneRoster 1.1" in prompt  # still named under "Collections"
+
+
+def test_mixed_up_request_names_are_fixed_for_the_environment(tmp_path):
+    from restclient.workspace import Workspace
+    Workspace()
+    a = asst.Assistant(Settings(knowledge_dir=str(tmp_path)), "Schoology - Example District")
+    assert a._fix_request_args({"collection": "Users/Get user (user_id)"}) == \
+        {"collection": "Schoology API", "request": "Users/Get user"}
+    assert a._fix_request_args({"collection": "Schoology API", "request": "[GET] Users/Get user's sections (user_id)"}) \
+        == {"collection": "Schoology API", "request": "Users/Get user's sections"}
+    wrong = {"collection": "Schoology API", "request": "Enrollments/Enrollments for class (class_sourcedId)"}
+    assert a._fix_request_args(dict(wrong)) == wrong  # a OneRoster request isn't moved to a Schoology district

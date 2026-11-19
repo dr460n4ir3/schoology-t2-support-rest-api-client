@@ -1,7 +1,7 @@
 #!/bin/bash
 # Optional: sets up the free local AI (Ollama) used by the Assistant tab. macOS and Linux.
 #
-#   ./install_local_ai.sh              # picks llama3.1:8b (16 GB+ RAM) or llama3.2:3b
+#   ./install_local_ai.sh              # picks llama3.1:8b (Apple Silicon / Linux, 16 GB+) or qwen2.5:3b
 #   ./install_local_ai.sh qwen3:8b     # or choose the chat model yourself
 #
 # Mac users can double-click "Install Local AI (optional).command" instead.
@@ -59,8 +59,15 @@ if [ -z "$model" ]; then
     else
         ram_gb=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1048576 ))
     fi
-    if [ "$ram_gb" -ge 15 ]; then model="llama3.1:8b"; else model="llama3.2:3b"; fi
-    echo "This computer has ${ram_gb} GB of RAM, so the chat model will be ${model}."
+    # Intel Macs can't use their graphics chip for AI, so an 8B model takes minutes per answer there.
+    # qwen2.5:3b answers our tests just as well and is about 3x faster.
+    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" != "arm64" ]; then
+        model="qwen2.5:3b"
+        echo "This is an Intel Mac, so the chat model will be ${model} (fast enough without an Apple chip)."
+    else
+        if [ "$ram_gb" -ge 15 ]; then model="llama3.1:8b"; else model="qwen2.5:3b"; fi
+        echo "This computer has ${ram_gb} GB of RAM, so the chat model will be ${model}."
+    fi
 fi
 
 echo; echo "Downloading ${model}..."

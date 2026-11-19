@@ -11,6 +11,7 @@ from typing import Callable, Iterable
 import requests
 
 DOWNLOAD_URL = "https://ollama.com/download"
+KEEP_ALIVE = "30m"  # keep the model in memory between questions (Ollama's default is 5 minutes)
 
 
 class OllamaError(RuntimeError):
@@ -63,7 +64,7 @@ class Ollama:
     def chat(self, model: str, messages: list[dict], tools: list[dict] | None = None,
              num_ctx: int | None = None, temperature: float = 0.2) -> dict:
         """One (non-streaming) chat call. Returns the assistant message dict."""
-        payload: dict = {"model": model, "messages": messages, "stream": False,
+        payload: dict = {"model": model, "messages": messages, "stream": False, "keep_alive": KEEP_ALIVE,
                          "options": {"temperature": temperature}}
         if num_ctx:
             payload["options"]["num_ctx"] = num_ctx
@@ -74,7 +75,8 @@ class Ollama:
     def embed(self, model: str, texts: list[str], batch: int = 32) -> list[list[float]]:
         out: list[list[float]] = []
         for i in range(0, len(texts), batch):
-            data = self._post("/api/embed", {"model": model, "input": texts[i:i + batch]})
+            data = self._post("/api/embed", {"model": model, "input": texts[i:i + batch],
+                                             "keep_alive": KEEP_ALIVE})
             out.extend(data.get("embeddings", []))
         if len(out) != len(texts):
             raise OllamaError(f"Embedding model '{model}' returned {len(out)} vectors for {len(texts)} texts.")

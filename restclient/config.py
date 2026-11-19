@@ -48,6 +48,13 @@ class Settings:
     ollama_num_ctx: int = 16384  # context window; tool definitions + documents + API responses need room
     knowledge_dir: str = ""  # blank = <app home>/knowledge
     knowledge_top_k: int = 5  # document excerpts given to the model per question
+    # Database tab: the team's own sign-in commands + the folder of connection files they create.
+    # Blank by default - each user fills these in on their own computer (never stored in the repo).
+    db_tool_folder: str = ""  # folder the commands run in
+    db_signin_commands: str = ""  # one command per line, run in order
+    db_connections_dir: str = ""  # folder of connection files (opened like a double-click)
+    db_open_with: str = ""  # Mac only: app to open them with, e.g. "Sequel Ace" (blank = default app)
+    db_use_terminal: bool = False  # run the commands in a Terminal window instead (if they ask questions)
 
     def _dir(self, value: str, default: str) -> Path:
         path = Path(value).expanduser() if value.strip() else app_home() / default
