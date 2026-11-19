@@ -39,7 +39,12 @@ A lightweight Postman replacement for the PS SYG Support team. Written in Python
    (e.g. a `user_id` column), click **Preview first row**, then **Run**. Results are saved
    automatically. Click any row to see the full response.
    - Runs that change data (PUT/POST/DELETE) ask for confirmation first. Try 1–2 rows first!
-5. Close the browser tab when you're done. The ⏻ button (top right) fully stops the app.
+5. **Assistant** tab (optional, free, runs on your computer): ask questions in plain English, e.g.
+   *"Look up Schoology user 12345 and list their sections"* or *"What do our docs say about SYG-ROSTER-409?"*.
+   It searches documents you add (PDF/Word/text) and calls the API with your saved requests.
+   First time: double-click **`Install Local AI (optional).bat`** (Mac: **`.command`**). It downloads
+   about 2–5 GB, so run it on a good connection.
+6. Close the browser tab when you're done. The ⏻ button (top right) fully stops the app.
 
 Your files are in `C:\Users\<you>\SchoologyAPIClient` on Windows or `/Users/<you>/SchoologyAPIClient` on
 a Mac (collections, environments, results, logs).
@@ -103,7 +108,7 @@ On a Mac use `.venv/bin/python` instead of `.venv\Scripts\python`.
 ### Connecting AI (MCP)
 The MCP server (`restclient/mcp_server.py`) exposes these tools: `list_collections`, `list_requests`,
 `list_environments`, `preview_request`, `send_saved_request`, `run_bulk`, `create_request`, and
-`send_http_request` (ad-hoc, off by default). It reads the same collections/environments as the app.
+`send_http_request` (ad-hoc, off by default), and `search_knowledge_base` (needs the local AI). It reads the same collections/environments as the app.
 The **AI & Help** tab shows ready-to-copy config with the right paths for that PC.
 
 - **GitHub Copilot (VS Code, Agent mode)**: this repo includes `.vscode/mcp.json`. Open the folder in
@@ -127,6 +132,25 @@ The **AI & Help** tab shows ready-to-copy config with the right paths for that P
 
 Secret environment values are never returned to the AI. Note that when the AI sends a request, the API
 response itself (e.g. student records) goes to the AI service your company uses, so follow your data policy.
+
+### Local AI assistant (Ollama, optional)
+The **Assistant** tab is a chat that runs on [Ollama](https://ollama.com) on the same computer, so questions,
+documents and API responses never leave the PC. It is the "RAG + API calls in one tool" option:
+- **Knowledge base**: upload PDF / Word / text / Markdown / HTML. The files are chunked and embedded with
+  `nomic-embed-text`, then stored in `~/SchoologyAPIClient/knowledge` (`knowledge_dir` can point at a shared
+  drive so the team shares one knowledge base). The best matches are given to the model for every question,
+  and the answer cites them.
+- **API calls**: the model gets the MCP tools (`list_requests`, `send_saved_request`, `run_bulk`,
+  `search_knowledge_base`, ...) with the same safety switches. `create_request` is not offered.
+- **Install**: `Install Local AI (optional).bat` (Windows: winget, or the official installer as a fallback),
+  `Install Local AI (optional).command` (Mac), or `./install_local_ai.sh [model]` (Mac/Linux, bash).
+  They install Ollama, pick `llama3.1:8b` (16 GB+ RAM) or `llama3.2:3b`, pull `nomic-embed-text`
+  and save the choice in settings. Models can also be switched and downloaded from the Assistant tab.
+- **Model choice matters**: small models (3B) answer from documents fine but are unreliable at choosing API
+  calls. Use an 8B tool-calling model (`llama3.1:8b`, `qwen3:8b`) or larger for API questions.
+- No LangChain or vector database is needed: plain HTTP to Ollama plus a dot-product search
+  (`restclient/ollama.py`, `knowledge.py`, `assistant.py`). The tools also appear in MCP as
+  `search_knowledge_base`, so Copilot can use the knowledge base too.
 
 ### Settings (`~/SchoologyAPIClient/settings.json`)
 `collections_dir`, `environments_dir`, `results_dir`, `timeout_seconds`, `verify_ssl`,

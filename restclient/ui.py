@@ -18,7 +18,10 @@ from pathlib import Path
 from nicegui import app, run, ui
 
 from . import APP_NAME, __version__, engine, postman, runner
+from .assistant import MAX_TOOL_ROUNDS, Assistant
 from .config import app_home, save_settings
+from .knowledge import SUPPORTED as KB_TYPES, open_kb
+from .ollama import DOWNLOAD_URL as OLLAMA_DOWNLOAD_URL, Ollama, OllamaError
 from .models import (AUTH_TYPES, BODY_MODES, METHODS, OAUTH1_SIGNATURES, KV, Auth, Collection, Environment,
                      Folder, Request)
 from .variables import is_unset, missing_variables, request_variables
@@ -427,11 +430,31 @@ class ClientPage:
         # The app has its own dark mode: stop the Dark Reader browser extension from re-colouring it
         ui.add_head_html('<meta name="darkreader-lock">')
         ui.add_css("""
-            :root { color-scheme: light; --rc-bg: #f7f8fa; --rc-fg: #1f2328; --rc-panel: #ffffff;
-                    --rc-side: #f5f5f5; --rc-active: #e8f0fe; --rc-border: rgba(0,0,0,.12); }
-            :root:has(body.body--dark) { color-scheme: dark; --rc-bg: #0d1117; --rc-fg: #e6edf3;
-                    --rc-panel: #161b22; --rc-side: #11161d; --rc-active: #1f3a5f; --rc-border: rgba(255,255,255,.14); }
+            /* Light = pure white surfaces, dark = pure black surfaces (high contrast both ways). */
+            :root { color-scheme: light; --rc-bg: #ffffff; --rc-fg: #000000; --rc-panel: #ffffff;
+                    --rc-side: #ffffff; --rc-active: #e8f0fe; --rc-border: rgba(0,0,0,.18); --rc-code: #ffffff; }
+            :root:has(body.body--dark) { color-scheme: dark; --rc-bg: #000000; --rc-fg: #ffffff;
+                    --rc-panel: #000000; --rc-side: #000000; --rc-active: #1f3a5f; --rc-border: rgba(255,255,255,.22);
+                    --rc-code: #000000; }
+            body.body--dark { --q-dark: #000000; --q-dark-page: #000000; }
             body { background: var(--rc-bg) !important; color: var(--rc-fg); }
+            .q-card, .q-menu, .q-dialog .q-card, .q-table__container, .q-uploader, .q-expansion-item,
+            .q-tab-panels, .q-tab-panel, .q-list, .q-item, .q-stepper, .q-date, .q-time, .q-tooltip--style {
+                background-color: var(--rc-panel); color: var(--rc-fg); }
+            .q-card--bordered, .q-uploader, .q-table__container { border-color: var(--rc-border) !important; }
+            .q-menu, .q-dialog .q-card { border: 1px solid var(--rc-border); }
+            .q-field--outlined .q-field__control { background: var(--rc-panel); }
+            .body--dark .q-field--outlined .q-field__control:before { border-color: rgba(255,255,255,.35); }
+            .q-field__native, .q-field__input, .q-select__dropdown-icon { color: var(--rc-fg) !important; }
+            .cm-editor, .cm-gutters, .cm-scroller { background-color: var(--rc-code) !important; }
+            .body--dark .cm-gutters { border-right: 1px solid var(--rc-border) !important; }
+            .body--dark .cm-activeLine, .body--dark .cm-activeLineGutter { background-color: #111111 !important; }
+            .nicegui-code, .nicegui-code pre, .nicegui-code .codehilite { background: var(--rc-code) !important;
+                color: var(--rc-fg); border: 1px solid var(--rc-border); }
+            .q-uploader__header { background: var(--q-primary); }
+            .nicegui-markdown code { word-break: break-all; }
+            .q-chip--outline { background: transparent !important; }
+            .body--dark .q-badge--outline { background: transparent; }
             .app-header { background: var(--rc-panel) !important; color: var(--rc-fg) !important;
                           border-bottom: 1px solid var(--rc-border); }
             .app-drawer { background: var(--rc-side) !important; }
@@ -445,6 +468,11 @@ class ClientPage:
             .q-expansion-item__container > .q-item { min-height: 32px; padding: 0 4px; }
             .q-drawer .q-scrollarea__container { overflow-x: hidden !important; }
             .q-drawer .q-scrollarea__content { width: 100%; }
+            .rc-user-msg { background: var(--q-primary); color: #fff; border-radius: 14px 14px 4px 14px;
+                           padding: 8px 12px; max-width: 80%; white-space: pre-wrap; }
+            .rc-bot-msg { background: var(--rc-panel); border: 1px solid var(--rc-border); max-width: 92%;
+                          border-radius: 14px 14px 14px 4px; padding: 4px 14px; }
+            .rc-bot-msg pre { white-space: pre-wrap; }
         """)
         self.dialog_host = ui.element("div")
         # {{variable}} highlighting + click-to-edit popover (anchored where the variable was clicked)
@@ -498,6 +526,7 @@ class ClientPage:
             ui.tab("Request", icon="send")
             ui.tab("Bulk Runner", icon="playlist_play")
             ui.tab("Environments", icon="tune")
+            ui.tab("Assistant", icon="forum")
             ui.tab("AI & Help", icon="smart_toy")
         with ui.tab_panels(self.tabs, value="Request").classes("w-full bg-transparent") \
                 .props("keep-alive animated=false"):
@@ -507,6 +536,8 @@ class ClientPage:
                 self.build_runner_panel()
             with ui.tab_panel("Environments").classes("p-0 pt-2"):
                 self.build_env_panel()
+            with ui.tab_panel("Assistant").classes("p-0 pt-2"):
+                self.build_assistant_panel()
             with ui.tab_panel("AI & Help").classes("p-0 pt-2"):
                 self.build_ai_panel()
 
@@ -1674,6 +1705,338 @@ class ClientPage:
             self.env_editor.clear()
 
     # ============================================================== AI & help
+    # ============================================================ assistant (local AI)
+    EXAMPLE_QUESTIONS = [
+        "Which collections and environments do I have?",
+        "Look up Schoology user 12345 and summarise who they are.",
+        "In OneRoster 1.1, find the user with identifier 100234 and list their classes.",
+        "What do our documents say about students missing from a course after a sync?",
+    ]
+
+    def build_assistant_panel(self) -> None:
+        self.assistant: Assistant | None = None
+        self.chat_busy = False
+        self.ai_info: dict = {"version": None, "models": [], "checked": False}
+        self.pulling: dict = {}  # model -> (status, fraction)
+        with ui.row().classes("w-full gap-4 items-start no-wrap"):
+            with ui.card().classes("flex-1 min-w-[460px] p-0 gap-0").props("flat bordered"):
+                with ui.row().classes("w-full items-center px-3 py-2 border-b no-wrap"):
+                    ui.icon("forum", color="primary")
+                    ui.label("Assistant").classes("font-semibold")
+                    ui.label("runs on this computer, nothing leaves it").classes("text-xs text-grey-7")
+                    ui.space()
+                    ui.button("New chat", icon="add_comment", on_click=self.new_chat).props("flat dense no-caps")
+                with ui.scroll_area().classes("w-full").style("height: calc(100vh - 300px)") as self.chat_scroll:
+                    self.chat_log = ui.column().classes("w-full gap-3 p-3")
+                    with ui.row().classes("items-center gap-2 px-4 pb-3") as self.chat_status:
+                        ui.spinner("dots", size="md", color="primary")
+                        self.chat_status_label = ui.label("").classes("text-sm text-grey-7")
+                    self.chat_status.set_visibility(False)
+                with ui.row().classes("w-full items-end no-wrap gap-2 p-3 border-t"):
+                    self.chat_input = ui.textarea(
+                        placeholder="Ask about a user, section, sync error, ...  (Enter sends, Shift+Enter = new line)") \
+                        .props("outlined dense autogrow rows=1").classes("flex-grow")
+                    self.chat_input.on("keydown.enter.exact.prevent", self.send_chat)
+                    self.chat_send_btn = ui.button(icon="send", on_click=self.send_chat).props("round color=primary")
+            with ui.column().classes("w-96 gap-3"):
+                with ui.card().classes("w-full").props("flat bordered"):
+                    self.render_ai_status()
+                with ui.card().classes("w-full").props("flat bordered"):
+                    with ui.row().classes("w-full items-center"):
+                        ui.label("Knowledge base").classes("text-lg font-semibold")
+                        ui.space()
+                        ui.button(icon="folder_open", on_click=lambda: self.open_folder(WS.settings.knowledge_path)) \
+                            .props("flat round dense").tooltip("Open the knowledge folder")
+                    ui.label("Runbooks, KB articles, API docs, Jira exports. The assistant searches them for every "
+                             "question.").classes("text-xs text-grey-7")
+                    ui.upload(multiple=True, auto_upload=True, on_upload=self.handle_kb_upload,
+                              label="Add documents (PDF, Word, text, Markdown, HTML)") \
+                        .props(f'accept="{",".join(sorted(KB_TYPES))}" flat bordered').classes("w-full")
+                    self.render_kb_docs()
+        self.render_chat_welcome()
+        ui.timer(0.2, self.refresh_ai_status, once=True)
+
+    # ------------------------------------------------------------- status card
+    async def refresh_ai_status(self) -> None:
+        client = Ollama(WS.settings.ollama_url)
+        version = await run.io_bound(client.version)
+        models = []
+        if version:
+            try:
+                models = await run.io_bound(client.models)
+            except OllamaError:
+                pass
+        self.ai_info = {"version": version, "models": models, "checked": True}
+        self.render_ai_status.refresh()
+
+    @ui.refreshable_method
+    def render_ai_status(self) -> None:
+        info = self.ai_info
+        with ui.row().classes("w-full items-center"):
+            ui.label("Local AI (Ollama)").classes("text-lg font-semibold")
+            ui.space()
+            ui.button(icon="refresh", on_click=self.refresh_ai_status).props("flat round dense").tooltip("Check again")
+        if not info["checked"]:
+            ui.label("Checking...").classes("text-sm text-grey-7")
+            return
+        if not info["version"]:
+            ui.label("Ollama isn't running on this computer.").classes("text-orange-9 text-sm font-medium")
+            ui.markdown(
+                "The assistant needs **Ollama**, a free app that runs AI models locally.\n\n"
+                "1. Double-click **Install Local AI (optional)** in the app folder "
+                "(`.bat` on Windows, `.command` on Mac), **or** download it from "
+                f"[ollama.com/download]({OLLAMA_DOWNLOAD_URL}).\n"
+                "2. Make sure Ollama is running (llama icon in the taskbar / menu bar), then click refresh above."
+            ).classes("text-sm")
+            return
+        installed = info["models"]
+        ui.label(f"Ollama {info['version']} is running").classes("text-green-8 text-sm")
+        for attr, label, hint in (
+                ("ollama_chat_model", "Chat model", "llama3.1:8b needs ~8 GB free RAM; llama3.2:3b for smaller laptops. "
+                                                    "qwen3:8b is also good at API calls."),
+                ("ollama_embed_model", "Document search model", "Turns documents into searchable vectors "
+                                                                "(nomic-embed-text, ~270 MB).")):
+            current = getattr(WS.settings, attr)
+            options = sorted(set(installed) | {current})
+            ui.select(options, value=current, label=label, with_input=True, new_value_mode="add-unique",
+                      on_change=lambda e, attr=attr: self.set_ai_model(attr, e.value)) \
+                .props("outlined dense options-dense").classes("w-full").tooltip(hint)
+            client = Ollama(WS.settings.ollama_url)
+            if current in self.pulling:
+                status, frac = self.pulling[current]
+                ui.label(f"Downloading {current}: {status}").classes("text-xs text-grey-7")
+                ui.linear_progress(value=frac or 0, show_value=False).props("instant-feedback")
+            elif not client.has_model(current, installed):
+                with ui.row().classes("w-full items-center no-wrap gap-2"):
+                    ui.label(f"{current} isn't downloaded yet.").classes("text-xs text-orange-9 flex-grow")
+                    ui.button("Download", icon="download", on_click=lambda m=current: self.pull_model(m)) \
+                        .props("dense no-caps color=primary")
+        kb = open_kb(WS.settings)
+        if kb.needs_rebuild:
+            ui.label(f"Documents were indexed with '{kb.index_model}'. Rebuild to use "
+                     f"'{WS.settings.ollama_embed_model}'.").classes("text-xs text-orange-9")
+        ui.label("Safety switches on the AI & Help tab apply here too (read-only by default).") \
+            .classes("text-xs text-grey-7")
+
+    def set_ai_model(self, attr: str, value) -> None:
+        value = (value or "").strip()
+        if not value or value == getattr(WS.settings, attr):
+            return
+        setattr(WS.settings, attr, value)
+        save_settings(WS.settings)
+        if self.assistant:
+            self.assistant.tools_supported = True  # re-check with the new model
+        self.render_ai_status.refresh()
+        self.render_kb_docs.refresh()
+
+    async def pull_model(self, name: str) -> None:
+        if name in self.pulling:
+            return
+        self.pulling[name] = ("starting", 0.0)
+        self.render_ai_status.refresh()
+
+        def progress(status: str, frac: float | None) -> None:
+            self.pulling[name] = (status, frac if frac is not None else self.pulling.get(name, ("", 0))[1])
+
+        timer = ui.timer(0.7, self.render_ai_status.refresh)
+        try:
+            await run.io_bound(Ollama(WS.settings.ollama_url).pull, name, progress)
+            ui.notify(f"{name} downloaded", type="positive")
+        except OllamaError as e:
+            ui.notify(str(e), type="negative", multi_line=True, timeout=10000)
+        finally:
+            timer.cancel()
+            self.pulling.pop(name, None)
+            await self.refresh_ai_status()
+
+    # ----------------------------------------------------------- knowledge base
+    @ui.refreshable_method
+    def render_kb_docs(self) -> None:
+        kb = open_kb(WS.settings)
+        kb.reload_if_changed()
+        docs = kb.documents()
+        if not docs:
+            ui.label("No documents yet.").classes("text-sm text-grey-7")
+            return
+        ui.label(f"{len(docs)} document(s), {len(kb.chunks)} searchable passages").classes("text-xs text-grey-7")
+        with ui.column().classes("w-full gap-0"):
+            for d in sorted(docs, key=lambda d: d["name"].lower()):
+                with ui.row().classes("w-full items-center no-wrap gap-1"):
+                    ui.icon("description", size="xs").classes("text-grey-7")
+                    ui.label(d["name"]).classes("text-sm truncate flex-grow").tooltip(
+                        f"{d['chunks']} passages, added {d['added'].replace('T', ' ')}")
+                    ui.button(icon="close", on_click=lambda n=d["name"]: self.remove_kb_doc(n)) \
+                        .props("flat round dense size=sm").tooltip("Remove")
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Rebuild", icon="sync", on_click=self.rebuild_kb).props("flat dense no-caps") \
+                .tooltip("Re-read every document (needed after changing the document search model)")
+
+    async def handle_kb_upload(self, e) -> None:
+        name = e.file.name
+        data = await e.file.read()
+        note = ui.notification(f"Reading {name}...", spinner=True, timeout=None)
+        try:
+            n = await run.io_bound(open_kb(WS.settings).add, name, data)
+            note.message, note.type, note.spinner, note.timeout = f"Added {name} ({n} passages)", "positive", False, 3
+        except (OllamaError, ValueError, OSError) as exc:
+            note.dismiss()
+            hint = "" if self.ai_info.get("version") else " Is Ollama running?"
+            ui.notify(f"{name}: {exc}{hint}", type="negative", multi_line=True, timeout=12000)
+        self.render_kb_docs.refresh()
+
+    async def remove_kb_doc(self, name: str) -> None:
+        if not await self.confirm("Remove document?", f"Remove **{name}** from the knowledge base?", "Remove",
+                                  "negative"):
+            return
+        await run.io_bound(open_kb(WS.settings).remove, name)
+        self.render_kb_docs.refresh()
+
+    async def rebuild_kb(self) -> None:
+        note = ui.notification("Rebuilding the knowledge base...", spinner=True, timeout=None)
+        try:
+            n = await run.io_bound(open_kb(WS.settings).rebuild)
+            note.message, note.type, note.spinner, note.timeout = f"Rebuilt: {n} passages", "positive", False, 3
+        except (OllamaError, ValueError, OSError) as exc:
+            note.dismiss()
+            ui.notify(str(exc), type="negative", multi_line=True, timeout=12000)
+        self.render_kb_docs.refresh()
+        self.render_ai_status.refresh()
+
+    # -------------------------------------------------------------------- chat
+    def render_chat_welcome(self) -> None:
+        with self.chat_log:
+            with ui.column().classes("w-full items-center gap-2 py-6") as self.chat_welcome:
+                ui.icon("forum", size="xl", color="primary")
+                ui.label("Ask in plain English. The assistant can search your documents and call the API "
+                         "using your saved requests and the environment selected at the top.") \
+                    .classes("text-sm text-grey-7 text-center max-w-xl")
+                with ui.row().classes("justify-center gap-2 max-w-2xl"):
+                    for q in self.EXAMPLE_QUESTIONS:
+                        ui.chip(q, on_click=lambda q=q: self.chat_input.set_value(q)) \
+                            .props("outline clickable color=primary").classes("text-xs")
+
+    def new_chat(self) -> None:
+        if self.chat_busy:
+            return
+        if self.assistant:
+            self.assistant.reset()
+        self.chat_log.clear()
+        self.chat_welcome = None
+        self.render_chat_welcome()
+
+    def get_assistant(self) -> Assistant:
+        if self.assistant is None:
+            self.assistant = Assistant(WS.settings)
+        elif self.assistant.settings is not WS.settings:  # Settings dialog replaced the settings object
+            messages = self.assistant.messages
+            self.assistant = Assistant(WS.settings)
+            self.assistant.messages = messages
+        env = self.env()
+        self.assistant.environment = env.name if env else None
+        return self.assistant
+
+    def chat_scroll_bottom(self) -> None:
+        ui.timer(0.05, lambda: self.chat_scroll.scroll_to(percent=1.0), once=True)
+
+    def add_bot_message(self, text: str, sources: list[dict] | None = None, kind: str = "") -> None:
+        with self.chat_log, ui.column().classes("w-full gap-1 items-start"):
+            if kind == "error":
+                with ui.row().classes("items-start no-wrap gap-2 rc-bot-msg py-2"):
+                    ui.icon("error_outline", color="negative")
+                    ui.label(text).classes("text-sm whitespace-pre-wrap")
+                return
+            if kind == "notice":
+                ui.label(text).classes("text-xs text-orange-9")
+                return
+            with ui.element("div").classes("rc-bot-msg"):
+                ui.markdown(text or "_(no answer)_")
+            if sources:
+                with ui.row().classes("gap-1 items-center"):
+                    ui.label("Documents:").classes("text-xs text-grey-7")
+                    for i, s in enumerate(sources, 1):
+                        with ui.chip(f"[{i}] {s['source']}", icon="description").props("dense outline size=sm"):
+                            ui.tooltip(s["text"][:600]).classes("text-xs max-w-md whitespace-pre-wrap")
+
+    def add_tool_step(self, name: str, args: dict, result: str) -> None:
+        brief = ", ".join(f"{k}={json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else v}"
+                          for k, v in args.items() if k not in ("environment",))
+        status = ""
+        try:
+            data = json.loads(result)
+            if isinstance(data, dict):
+                if data.get("error"):
+                    status = "error"
+                elif data.get("status"):
+                    status = str(data["status"])
+            pretty = json.dumps(data, indent=2, ensure_ascii=False)
+        except ValueError:
+            pretty = result
+        ok = status not in ("error",) and not status.startswith(("4", "5"))
+        with self.chat_log:
+            with ui.expansion(icon="build" if ok else "warning").props("dense").classes(
+                    "w-full text-xs border rounded" + ("" if ok else " text-orange-9")) as exp:
+                with exp.add_slot("header"), ui.row().classes("items-center no-wrap gap-2 w-full"):
+                    ui.icon("build" if ok else "warning", size="xs")
+                    ui.label(name).classes("font-mono font-medium")
+                    ui.label(brief).classes("font-mono text-grey-7 truncate flex-grow")
+                    if status:
+                        ui.badge(status, color="positive" if ok else "negative").props("outline")
+                ui.code(pretty[:6000] + ("\n..." if len(pretty) > 6000 else ""), language="json") \
+                    .classes("w-full text-xs")
+
+    async def send_chat(self) -> None:
+        text = (self.chat_input.value or "").strip()
+        if not text or self.chat_busy:
+            return
+        if not self.ai_info.get("version"):
+            await self.refresh_ai_status()
+            if not self.ai_info.get("version"):
+                ui.notify("Ollama isn't running. See the Local AI box on the right.", type="warning")
+                return
+        if not Ollama(WS.settings.ollama_url).has_model(WS.settings.ollama_chat_model, self.ai_info["models"]):
+            ui.notify(f"Download the chat model '{WS.settings.ollama_chat_model}' first (box on the right).",
+                      type="warning")
+            return
+        self.chat_busy = True
+        self.chat_send_btn.props("loading")
+        self.chat_input.value = ""
+        if self.chat_welcome is not None:
+            self.chat_welcome.delete()
+            self.chat_welcome = None
+        with self.chat_log, ui.row().classes("w-full justify-end"):
+            ui.label(text).classes("rc-user-msg text-sm")
+        self.chat_status_label.text = "Searching documents..."
+        self.chat_status.set_visibility(True)
+        self.chat_scroll_bottom()
+        a = self.get_assistant()
+        try:
+            sources = await run.io_bound(a.begin_turn, text)
+            answer = "I stopped after too many tool calls. Try a more specific question."
+            for _ in range(MAX_TOOL_ROUNDS):
+                self.chat_status_label.text = f"Thinking ({WS.settings.ollama_chat_model})..."
+                msg = await run.io_bound(a.think)
+                if msg.get("notice"):
+                    self.add_bot_message(msg["notice"], kind="notice")
+                if not msg.get("tool_calls"):
+                    answer = msg["content"]
+                    break
+                for call in msg["tool_calls"]:
+                    self.chat_status_label.text = f"Calling {call.get('function', {}).get('name', 'tool')}..."
+                    name, args, result = await run.io_bound(a.call_tool, call)
+                    self.add_tool_step(name, args, result)
+                    self.chat_scroll_bottom()
+            self.add_bot_message(answer, sources)
+        except OllamaError as e:
+            self.add_bot_message(str(e), kind="error")
+        except Exception as e:  # keep the chat usable whatever happens
+            log.exception("assistant failed")
+            self.add_bot_message(f"Something went wrong: {type(e).__name__}: {e}", kind="error")
+        finally:
+            self.chat_status.set_visibility(False)
+            self.chat_send_btn.props(remove="loading")
+            self.chat_busy = False
+            self.chat_scroll_bottom()
+
     def build_ai_panel(self) -> None:
         py = Path(sys.executable)
         if py.name.lower() == "pythonw.exe":
@@ -1703,6 +2066,8 @@ class ClientPage:
                 ui.code(mcpo, language="bash").classes("w-full")
                 ui.markdown("**Claude Desktop / Cursor / others**: use the same command and arguments as the "
                             "Copilot example.")
+                ui.markdown("**No AI subscription?** Use the **Assistant** tab: it runs a free local model "
+                            "(Ollama) on this computer, with the same tools plus your uploaded documents.")
             with ui.card().classes("w-96").props("flat bordered"):
                 ui.label("AI safety switches").classes("text-lg font-semibold")
                 ui.label("By default the AI can only read (GET) using saved requests.").classes("text-sm text-grey-7")

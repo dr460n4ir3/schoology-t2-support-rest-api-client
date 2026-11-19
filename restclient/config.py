@@ -41,6 +41,13 @@ class Settings:
     mcp_allow_write_methods: bool = False  # allow POST/PUT/PATCH/DELETE from the AI
     mcp_allow_adhoc_requests: bool = False  # allow the AI to call URLs that are not saved in a collection
     mcp_max_response_chars: int = 20000
+    # Local AI assistant (Ollama) - optional, see "Install Local AI" scripts
+    ollama_url: str = "http://localhost:11434"
+    ollama_chat_model: str = "llama3.1:8b"
+    ollama_embed_model: str = "nomic-embed-text"
+    ollama_num_ctx: int = 16384  # context window; tool definitions + documents + API responses need room
+    knowledge_dir: str = ""  # blank = <app home>/knowledge
+    knowledge_top_k: int = 5  # document excerpts given to the model per question
 
     def _dir(self, value: str, default: str) -> Path:
         path = Path(value).expanduser() if value.strip() else app_home() / default
@@ -58,6 +65,10 @@ class Settings:
     @property
     def results_path(self) -> Path:
         return self._dir(self.results_dir, "results")
+
+    @property
+    def knowledge_path(self) -> Path:
+        return self._dir(self.knowledge_dir, "knowledge")
 
     @property
     def logs_path(self) -> Path:

@@ -187,6 +187,18 @@ def run_bulk(collection: str, requests: list[str], csv_path: str, environment: s
 
 
 @mcp.tool()
+def search_knowledge_base(query: str, top_k: int = 5) -> list[dict]:
+    """Search the team's uploaded documents (runbooks, KB articles, API docs) for passages about `query`.
+
+    Returns the best-matching excerpts with their source file. Needs the optional local AI (Ollama).
+    """
+    from .knowledge import open_kb  # imported lazily: only needed when the knowledge base is used
+
+    ws = _ws()
+    return open_kb(ws.settings).search(query, k=max(1, min(int(top_k), 12)))
+
+
+@mcp.tool()
 def create_request(collection: str, name: str, method: str, url: str, folder: str | None = None,
                    params: dict[str, str] | None = None, headers: dict[str, str] | None = None,
                    json_body: str | None = None, description: str = "") -> dict:
