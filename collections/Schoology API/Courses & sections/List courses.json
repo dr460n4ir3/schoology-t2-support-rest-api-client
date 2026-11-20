@@ -1,0 +1,16 @@
+{
+  "name": "List courses",
+  "method": "GET",
+  "url": "{{base_url}}/courses",
+  "params": [
+    {
+      "key": "start",
+      "value": "0"
+    },
+    {
+      "key": "limit",
+      "value": "200"
+    }
+  ],
+  "id": "633bca94a200"
+}

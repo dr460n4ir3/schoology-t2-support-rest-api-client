@@ -1,0 +1,21 @@
+{
+  "name": "All terms",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/terms",
+  "params": [
+    {
+      "key": "limit",
+      "value": "100"
+    },
+    {
+      "key": "offset",
+      "value": "0"
+    },
+    {
+      "key": "filter",
+      "value": "status='active'",
+      "enabled": false
+    }
+  ],
+  "id": "c28341a8d9c3"
+}

@@ -177,12 +177,14 @@ def test_oauth2_bad_credentials_reported(server):
     assert res.error and "token request failed" in res.error.lower()
 
 
-@pytest.mark.parametrize("name", ["OneRoster 1.1.json", "OneRoster 1.2.json"])
+@pytest.mark.parametrize("name", ["OneRoster 1.1", "OneRoster 1.2"])
 def test_oneroster_get_token_debug_request(server, name):
     from pathlib import Path
 
-    path = Path(__file__).resolve().parent.parent / "examples" / "collections" / name
-    c = Collection.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    from restclient.collection_files import read_collection
+
+    c, problems = read_collection(Path(__file__).resolve().parent.parent / "collections" / name)
+    assert problems == []
     r = c.find_request("Auth/Get access token (debug)")
     assert r is not None and r.method == "POST"
     env = Environment(variables=[KV("token_url", f"{server}/token"), KV("client_id", "cid"),
@@ -289,22 +291,28 @@ def test_storage_round_trip(tmp_path):
     store = Store(s)
     c = Collection(name="My: Coll", items=[Request(name="r")])
     store.save_collection(c)
-    assert c.path.name == "My_ Coll.json"
+    assert c.path.name == "My_ Coll" and (c.path / "r.json").exists()
     c.name = "Renamed"
     store.save_collection(c)
-    assert [p.name for p in (tmp_path / "c").glob("*.json")] == ["Renamed.json"]
+    assert [p.name for p in (tmp_path / "c").iterdir()] == ["Renamed"]
     loaded = store.load_collections()
     assert loaded[0].items[0].name == "r"
     store.delete_collection(loaded[0])
-    assert (tmp_path / "c" / ".trash" / "Renamed.json").exists()
+    assert not (tmp_path / "c" / "Renamed").exists()
+    assert any(p.name.startswith("Renamed ") for p in store.trash_path().iterdir())
 
 
 def test_bundled_examples_load():
     from pathlib import Path
 
-    root = Path(__file__).resolve().parent.parent / "examples"
-    for f in (root / "collections").glob("*.json"):
-        c = Collection.from_dict(json.loads(f.read_text(encoding="utf-8")))
-        assert any(True for _ in c.walk())
+    from restclient.collection_files import read_collection
+
+    root = Path(__file__).resolve().parent.parent
+    folders = [p for p in (root / "collections").iterdir() if p.is_dir()]
+    assert len(folders) >= 3
+    for folder in folders:
+        c, problems = read_collection(folder)
+        assert problems == [] and any(True for _ in c.walk())
+    root = root / "examples"
     for f in (root / "environments").glob("*.json"):
         Environment.from_dict(json.loads(f.read_text(encoding="utf-8")))

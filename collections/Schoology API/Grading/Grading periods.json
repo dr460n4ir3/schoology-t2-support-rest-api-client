@@ -1,0 +1,6 @@
+{
+  "name": "Grading periods",
+  "method": "GET",
+  "url": "{{base_url}}/gradingperiods",
+  "id": "3419507794ba"
+}

@@ -1,0 +1,21 @@
+{
+  "name": "All teachers",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/teachers",
+  "params": [
+    {
+      "key": "limit",
+      "value": "100"
+    },
+    {
+      "key": "offset",
+      "value": "0"
+    },
+    {
+      "key": "filter",
+      "value": "status='active'",
+      "enabled": false
+    }
+  ],
+  "id": "88987c9c694c"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "758e15bfe0cd",
+  "name": "Users",
+  "order": [
+    "Who am I (app-user-info).json",
+    "Get user.json",
+    "Find users by school UID.json",
+    "List users.json",
+    "Get user's sections.json",
+    "Update user.json"
+  ]
+}

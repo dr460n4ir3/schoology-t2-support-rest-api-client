@@ -1,0 +1,6 @@
+{
+  "name": "Get user",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/users/{{user_sourcedId}}",
+  "id": "608eb595bc85"
+}

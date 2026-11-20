@@ -1,0 +1,27 @@
+{
+  "format": "restclient-collection-folder/1",
+  "id": "schoology-api-v1",
+  "name": "Schoology API",
+  "description": "Starter requests for the Schoology REST API v1. Auth is two-legged OAuth 1.0 using the consumer key/secret from https://<district>.schoology.com/api (set them in your environment).",
+  "variables": [
+    {
+      "key": "base_url",
+      "value": "https://api.schoology.com/v1"
+    }
+  ],
+  "auth": {
+    "type": "oauth1",
+    "consumer_key": "{{schoology_consumer_key}}",
+    "consumer_secret": "{{schoology_consumer_secret}}",
+    "access_token": "",
+    "token_secret": "",
+    "signature_method": "HMAC-SHA1",
+    "realm": ""
+  },
+  "order": [
+    "Users",
+    "Schools & buildings",
+    "Courses & sections",
+    "Grading"
+  ]
+}

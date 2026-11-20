@@ -1,0 +1,9 @@
+{
+  "name": "Update user",
+  "method": "PUT",
+  "url": "{{base_url}}/users/{{user_id}}",
+  "description": "Changes data! Edit the body to the fields you need. In the Bulk Runner, CSV columns (user_id, email) fill the {{variables}}.",
+  "body_mode": "json",
+  "body": "{\n  \"email\": \"{{email}}\"\n}",
+  "id": "f8f62f66973b"
+}

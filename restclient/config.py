@@ -21,6 +21,15 @@ def app_home() -> Path:
     return path
 
 
+def team_collections_dir() -> Path | None:
+    """The repo's shared collections/ folder, when the app runs from a `git clone` (the team edits it together
+    and shares changes through GitHub). None for the stand-alone build, or when RESTCLIENT_TEAM_COLLECTIONS=0."""
+    if getattr(sys, "frozen", False) or os.environ.get("RESTCLIENT_TEAM_COLLECTIONS", "1") == "0":
+        return None
+    root = Path(__file__).resolve().parent.parent
+    return root / "collections" if (root / ".git").exists() and (root / "collections").is_dir() else None
+
+
 def resource_dir() -> Path:
     """Folder holding bundled files (examples/). Works both from source and a PyInstaller build."""
     if getattr(sys, "frozen", False):
@@ -30,7 +39,7 @@ def resource_dir() -> Path:
 
 @dataclass
 class Settings:
-    collections_dir: str = ""  # blank = <app home>/collections
+    collections_dir: str = ""  # blank = the repo's shared collections/ folder (git copy) or <app home>/collections
     environments_dir: str = ""  # blank = <app home>/environments
     results_dir: str = ""  # blank = <app home>/results
     timeout_seconds: float = 30
@@ -64,7 +73,15 @@ class Settings:
 
     @property
     def collections_path(self) -> Path:
+        team = team_collections_dir()
+        if team is not None and not self.collections_dir.strip():
+            return team
         return self._dir(self.collections_dir, "collections")
+
+    @property
+    def uses_team_collections(self) -> bool:
+        team = team_collections_dir()
+        return team is not None and self.collections_path.resolve() == team.resolve()
 
     @property
     def environments_path(self) -> Path:

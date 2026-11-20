@@ -1,0 +1,41 @@
+{
+  "name": "Get access token (debug)",
+  "method": "POST",
+  "url": "{{token_url}}",
+  "description": "Debug only: shows the raw token response from the SIS. You don't need to run this first; every other request in this collection gets a token automatically. Use it when calls fail with 401/403 to check the token URL, client ID and secret. Sends client_id/client_secret as HTTP Basic auth (most SIS servers). If the server wants them in the body instead, set Auth to 'No auth' and enable the client_id/client_secret rows under Body. Not used by Infinite Campus OneRoster 1.1 (that uses OAuth 1.0 signing, no token).",
+  "headers": [
+    {
+      "key": "Accept",
+      "value": "application/json"
+    }
+  ],
+  "body_mode": "urlencoded",
+  "form": [
+    {
+      "key": "grant_type",
+      "value": "client_credentials"
+    },
+    {
+      "key": "scope",
+      "value": "{{scope}}",
+      "enabled": false
+    },
+    {
+      "key": "client_id",
+      "value": "{{client_id}}",
+      "enabled": false
+    },
+    {
+      "key": "client_secret",
+      "value": "{{client_secret}}",
+      "enabled": false,
+      "secret": true
+    }
+  ],
+  "auth": {
+    "type": "basic",
+    "username": "{{client_id}}",
+    "password": "{{client_secret}}"
+  },
+  "id": "get-token-or12"
+}

@@ -52,12 +52,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          nicegui-pack --onedir --windowed --noconfirm --clean --name "Schoology API Client" --add-data "examples;examples" run_app.py
+          nicegui-pack --onedir --windowed --noconfirm --clean --name "Schoology API Client" --add-data "examples;examples" --add-data "collections;collections" run_app.py
           Compress-Archive -Path "dist/Schoology API Client" -DestinationPath "Schoology-API-Client-${{ matrix.name }}.zip"
       - name: Build (Mac)
         if: runner.os == 'macOS'
         run: |
-          nicegui-pack --onedir --windowed --noconfirm --clean --name "Schoology API Client" --add-data "examples:examples" run_app.py
+          nicegui-pack --onedir --windowed --noconfirm --clean --name "Schoology API Client" --add-data "examples:examples" --add-data "collections:collections" run_app.py
           ditto -c -k --keepParent "dist/Schoology API Client.app" "Schoology-API-Client-${{ matrix.name }}.zip"
       - uses: actions/upload-artifact@v4
         with:

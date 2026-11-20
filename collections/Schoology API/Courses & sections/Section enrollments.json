@@ -1,0 +1,16 @@
+{
+  "name": "Section enrollments",
+  "method": "GET",
+  "url": "{{base_url}}/sections/{{section_id}}/enrollments",
+  "params": [
+    {
+      "key": "start",
+      "value": "0"
+    },
+    {
+      "key": "limit",
+      "value": "200"
+    }
+  ],
+  "id": "44f194452415"
+}

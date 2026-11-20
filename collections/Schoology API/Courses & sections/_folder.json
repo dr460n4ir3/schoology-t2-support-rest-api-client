@@ -1,0 +1,10 @@
+{
+  "id": "9e6651c6ceb0",
+  "name": "Courses & sections",
+  "order": [
+    "List courses.json",
+    "Get course sections.json",
+    "Get section.json",
+    "Section enrollments.json"
+  ]
+}

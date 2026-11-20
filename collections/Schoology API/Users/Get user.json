@@ -1,0 +1,7 @@
+{
+  "name": "Get user",
+  "method": "GET",
+  "url": "{{base_url}}/users/{{user_id}}",
+  "description": "Schoology user id (not the SIS id).",
+  "id": "e7a33968ded2"
+}

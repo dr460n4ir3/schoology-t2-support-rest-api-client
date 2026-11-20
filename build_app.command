@@ -16,6 +16,7 @@ export PATH="$(pwd)/.venv/bin:$PATH"
 .venv/bin/nicegui-pack --onedir --windowed --noconfirm --clean \
     --name "Schoology API Client" \
     --add-data "examples:examples" \
+    --add-data "collections:collections" \
     run_app.py || fail
 echo
 echo 'Done. Zip and share:  dist/Schoology API Client.app'

@@ -1,0 +1,9 @@
+{
+  "id": "c3dfee2c033a",
+  "name": "Schools & buildings",
+  "order": [
+    "List schools.json",
+    "Get school.json",
+    "List buildings.json"
+  ]
+}

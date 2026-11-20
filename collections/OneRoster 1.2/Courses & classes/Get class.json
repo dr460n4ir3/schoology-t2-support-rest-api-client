@@ -1,0 +1,6 @@
+{
+  "name": "Get class",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/classes/{{class_sourcedId}}",
+  "id": "f166933e0878"
+}

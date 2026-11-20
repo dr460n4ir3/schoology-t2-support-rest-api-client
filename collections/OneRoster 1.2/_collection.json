@@ -1,0 +1,24 @@
+{
+  "format": "restclient-collection-folder/1",
+  "id": "oneroster-1-2",
+  "name": "OneRoster 1.2",
+  "description": "OneRoster 1.2 rostering endpoints for SIS troubleshooting (PowerSchool SIS, Infinite Campus, ...). Set oneroster_base_url and credentials in an environment. Default auth is OAuth 2.0 client credentials; an environment can override it (e.g. Infinite Campus OneRoster 1.1 uses OAuth 1.0 HMAC-SHA256). Tip: turn on 'Fetch all pages' on a list request to pull every record.",
+  "variables": [],
+  "auth": {
+    "type": "oauth2",
+    "token_url": "{{token_url}}",
+    "client_id": "{{client_id}}",
+    "client_secret": "{{client_secret}}",
+    "scope": "",
+    "client_auth": "basic"
+  },
+  "order": [
+    "Auth",
+    "Orgs & schools",
+    "Academic sessions",
+    "Courses & classes",
+    "Users",
+    "Enrollments",
+    "Demographics"
+  ]
+}

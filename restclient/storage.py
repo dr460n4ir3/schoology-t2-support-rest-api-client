@@ -1,4 +1,5 @@
-"""Load and save collections/environments as JSON files (one file each).
+"""Load and save collections (a folder per collection, a file per request: see collection_files.py) and
+environments (one JSON file each).
 
 Secret environment values (the lock icon) and auth secrets are kept in the Mac Keychain / Windows Credential
 Manager when one is available (see secret_store.py); the environment file then only says "keychain": true.
@@ -14,8 +15,9 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from . import collection_files as cf
 from . import redact, secret_store
-from .config import Settings, resource_dir
+from .config import Settings, app_home, resource_dir
 from .models import Collection, Environment
 from .variables import is_unset
 
@@ -80,30 +82,85 @@ class Store:
         return bool(getattr(self.settings, "use_keychain", True)) and secret_store.available()
 
     # ------------------------------------------------------------- collections
+    def trash_path(self) -> Path:
+        """Deleted collections/requests are copied here (outside any git folder) so a mis-click is recoverable."""
+        return app_home() / "trash" / "collections"
+
     def load_collections(self) -> list[Collection]:
-        out = []
-        for path in sorted(self.settings.collections_path.glob("*.json")):
-            if path.name.startswith(".tmp_"):
+        folder = self.settings.collections_path
+        out, seen = [], set()
+        for path in sorted(folder.iterdir(), key=lambda p: p.name.lower()):
+            if not cf.is_collection_dir(path):
                 continue
             try:
-                out.append(Collection.from_dict(json.loads(path.read_text(encoding="utf-8")), path))
+                c, problems = cf.read_collection(path)
             except Exception as exc:  # a broken file should never stop the app
                 self.load_errors.append(f"{path.name}: {exc}")
                 log.warning("Could not load collection %s: %s", path, exc)
+                continue
+            for problem in problems:
+                self.load_errors.append(f"{problem} (skipped; fix or delete that file)")
+            if c.id in seen:
+                self.load_errors.append(f"{path.name}: same id as another collection, skipped")
+                continue
+            seen.add(c.id)
+            out.append(c)
+        for path in sorted(folder.glob("*.json")):  # older one-file collections: convert them once
+            if path.name.startswith(".tmp_"):
+                continue
+            try:
+                c = Collection.from_dict(json.loads(path.read_text(encoding="utf-8")), path)
+            except Exception as exc:
+                self.load_errors.append(f"{path.name}: {exc}")
+                log.warning("Could not load collection %s: %s", path, exc)
+                continue
+            if c.id in seen:  # already converted (e.g. the file came back from a backup)
+                continue
+            try:
+                self.save_collection(c)
+                log.info("Converted collection %s to one file per request in %s", path.name, c.path)
+            except OSError as exc:
+                log.warning("Could not convert %s: %s", path, exc)
+                c.path = path
+            seen.add(c.id)
+            out.append(c)
         return sorted(out, key=lambda c: c.name.lower())
 
-    def save_collection(self, c: Collection) -> Path:
+    def _collection_dir(self, c: Collection) -> Path:
+        """'<collections>/<name>', avoiding a different collection that has the same name."""
         folder = self.settings.collections_path
-        target = _target_path(folder, c.name, c.path, c.id)
-        _atomic_write(target, c.to_dict())
-        if c.path and c.path.resolve() != target.resolve() and c.path.exists():
-            c.path.unlink()  # renamed
+        base = cf.safe_name(c.name)
+        for n in range(1, 100):
+            candidate = folder / (base if n == 1 else f"{base} ({n})")
+            if c.path and c.path.is_dir() and candidate.resolve() == c.path.resolve():
+                return candidate
+            if not candidate.exists():
+                return candidate
+            try:
+                meta = json.loads((candidate / cf.COLLECTION_META).read_text(encoding="utf-8"))
+                if meta.get("id") == c.id:
+                    return candidate
+            except (OSError, ValueError):
+                pass
+        return folder / f"{base}_{c.id}"
+
+    def save_collection(self, c: Collection) -> Path:
+        target = self._collection_dir(c)
+        old = c.path
+        if old and old.is_dir() and old.resolve() != target.resolve() and not target.exists():
+            old.rename(target)  # renamed: move the folder so git sees a rename, not delete + add
+        cf.write_collection(c, target, self.trash_path())
+        if old and old.is_file() and old.suffix == ".json":  # converted from the older one-file format
+            self._backup(old, self.trash_path())
+            old.unlink()
         c.path = target
         return target
 
     def delete_collection(self, c: Collection) -> None:
-        if c.path and c.path.exists():
-            self._backup(c.path)
+        if c.path and c.path.is_dir():
+            cf.remove_collection(c.path, self.trash_path())
+        elif c.path and c.path.exists():
+            self._backup(c.path, self.trash_path())
             c.path.unlink()
 
     # ------------------------------------------------------------ environments
@@ -204,21 +261,25 @@ class Store:
             e.path.unlink()
 
     # ------------------------------------------------------------------- misc
-    def _backup(self, path: Path) -> None:
+    def _backup(self, path: Path, trash: Path | None = None) -> None:
         """Deleted files go to <folder>/.trash so a mis-click is recoverable."""
-        trash = path.parent / ".trash"
-        trash.mkdir(exist_ok=True)
+        trash = trash or path.parent / ".trash"
+        trash.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, trash / path.name)
 
     def seed_examples(self) -> list[str]:
         """On first run, copy the bundled example collections/environments into place."""
         added = []
-        examples = resource_dir() / "examples"
-        for sub, dest in (("collections", self.settings.collections_path),
-                          ("environments", self.settings.environments_path)):
-            if any(dest.glob("*.json")):
-                continue
-            for src in sorted((examples / sub).glob("*.json")):
+        bundled = resource_dir() / "collections"
+        dest = self.settings.collections_path
+        if bundled.is_dir() and dest.resolve() != bundled.resolve() and not any(
+                cf.is_collection_dir(p) or p.suffix == ".json" for p in dest.iterdir()):
+            for src in sorted(p for p in bundled.iterdir() if cf.is_collection_dir(p)):
+                shutil.copytree(src, dest / src.name)
+                added.append(src.name)
+        dest = self.settings.environments_path
+        if not any(dest.glob("*.json")):
+            for src in sorted((resource_dir() / "examples" / "environments").glob("*.json")):
                 shutil.copy2(src, dest / src.name)
                 added.append(src.name)
         return added

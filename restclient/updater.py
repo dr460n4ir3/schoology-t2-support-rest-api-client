@@ -16,6 +16,7 @@ from . import __version__
 from .config import resource_dir
 
 REPO = "dr460n4ir3/schoology-t2-support-rest-api-client"
+TEAM_FOLDER = "collections/"  # the team's shared requests: edited in the app, never block an update
 RELEASES_URL = f"https://github.com/{REPO}/releases/latest"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 
@@ -83,9 +84,10 @@ def _check_git(folder: Path) -> UpdateStatus:
     if upstream.returncode != 0:
         st.message = "This copy isn't following a GitHub branch, so it can't update itself."
         return st
-    behind = int(_git("rev-list", "--count", "HEAD..@{u}", cwd=folder).stdout.strip() or 0)
+    app_only = ["--", ".", ":(exclude)" + TEAM_FOLDER]  # teammates' request changes come in via Team, not here
+    behind = int(_git("rev-list", "--count", "HEAD..@{u}", *app_only, cwd=folder).stdout.strip() or 0)
     ahead = int(_git("rev-list", "--count", "@{u}..HEAD", cwd=folder).stdout.strip() or 0)
-    st.changes = [line for line in _git("log", "--format=%s", "HEAD..@{u}", cwd=folder).stdout.splitlines()
+    st.changes = [line for line in _git("log", "--format=%s", "HEAD..@{u}", *app_only, cwd=folder).stdout.splitlines()
                   if line.strip()][:20]
     st.latest = _git("rev-parse", "--short", "@{u}", cwd=folder).stdout.strip()
     st.available = behind > 0
@@ -93,7 +95,10 @@ def _check_git(folder: Path) -> UpdateStatus:
         st.message = "You have the latest version."
         return st
     edited = [line[3:] for line in _git("status", "--porcelain", "--untracked-files=no", cwd=folder).stdout
-              .splitlines() if line.strip()]
+              .splitlines() if line.strip() and not line[3:].strip('"').startswith(TEAM_FOLDER)]
+    if ahead:  # commits of team collection changes (not sent yet) are fine: they are replayed on top
+        own = [f for f in _git("diff", "--name-only", "@{u}...HEAD", cwd=folder).stdout.splitlines() if f.strip()]
+        ahead = sum(1 for f in own if not f.startswith(TEAM_FOLDER))
     if ahead:
         st.message = (f"{behind} update(s) available, but this copy has its own commits, so it can't update "
                       "automatically. Ask the app admin.")
@@ -143,9 +148,14 @@ def apply() -> str:
         raise UpdateError("This copy can't update itself. Download the latest version instead.")
     req = folder / "requirements.txt"
     before = req.read_text(encoding="utf-8") if req.exists() else ""
-    pull = _git("pull", "--ff-only", "--quiet", cwd=folder, timeout=180)
-    if pull.returncode != 0:
-        raise UpdateError("Update failed: " + (_first_line(pull.stderr) or _first_line(pull.stdout) or "git error"))
+    from . import team  # late import: team uses this module
+
+    try:
+        team.pull(folder)  # keeps this computer's unshared request edits
+    except team.Conflict as exc:
+        raise UpdateError(f"{exc}. Open Team (sidebar) to choose whose version to keep, then update.") from exc
+    except team.TeamError as exc:
+        raise UpdateError(f"Update failed: {exc}") from exc
     after = req.read_text(encoding="utf-8") if req.exists() else ""
     if after != before:
         kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}

@@ -18,6 +18,7 @@ set "PATH=%~dp0.venv\Scripts;%PATH%"
 ".venv\Scripts\nicegui-pack.exe" --onedir --windowed --noconfirm --clean ^
     --name "Schoology API Client" ^
     --add-data "examples;examples" ^
+    --add-data "collections;collections" ^
     run_app.py
 if not %errorlevel%==0 goto failed
 echo.

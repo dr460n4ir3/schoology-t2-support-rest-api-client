@@ -1,0 +1,12 @@
+{
+  "name": "Find user by username",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/users",
+  "params": [
+    {
+      "key": "filter",
+      "value": "username='{{username}}'"
+    }
+  ],
+  "id": "81d9953a0938"
+}

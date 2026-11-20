@@ -1,0 +1,26 @@
+{
+  "name": "List users",
+  "method": "GET",
+  "url": "{{base_url}}/users",
+  "params": [
+    {
+      "key": "start",
+      "value": "0"
+    },
+    {
+      "key": "limit",
+      "value": "200"
+    },
+    {
+      "key": "role_ids",
+      "value": "",
+      "enabled": false
+    },
+    {
+      "key": "building_id",
+      "value": "",
+      "enabled": false
+    }
+  ],
+  "id": "094bced578ac"
+}

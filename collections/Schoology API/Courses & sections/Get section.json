@@ -1,0 +1,6 @@
+{
+  "name": "Get section",
+  "method": "GET",
+  "url": "{{base_url}}/sections/{{section_id}}",
+  "id": "a5fd0d833612"
+}

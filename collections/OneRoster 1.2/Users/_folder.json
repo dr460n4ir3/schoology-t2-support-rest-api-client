@@ -1,0 +1,14 @@
+{
+  "id": "ea5c3b95911b",
+  "name": "Users",
+  "order": [
+    "All users.json",
+    "Get user.json",
+    "Find user by identifier.json",
+    "Find user by username.json",
+    "Classes for user.json",
+    "All students.json",
+    "All teachers.json",
+    "Get user (with profiles).json"
+  ]
+}

@@ -21,7 +21,7 @@ from pathlib import Path
 from nicegui import app, run, ui
 
 from . import APP_NAME, __version__, copilot_setup, engine, launcher, postman, redact, runner, secret_store, support, \
-    updater
+    team, updater
 from .assistant import MAX_TOOL_ROUNDS, Assistant, strip_thinking
 from .config import app_home, load_settings, save_settings
 from .knowledge import SUPPORTED as KB_TYPES, open_kb
@@ -583,8 +583,15 @@ class ClientPage:
                     .tooltip("New collection")
                 ui.button(icon="upload_file", on_click=self.open_import).props("flat round dense") \
                     .tooltip("Import Postman / exported file")
+                self.team_enabled = team.repo() is not None
+                self.team_status, self.team_seen, self.team_busy = None, -1, False
+                with ui.button(icon="groups", on_click=self.open_team).props("flat round dense") as team_btn:
+                    self.team_badge = ui.badge("", color="primary").props("floating rounded")
+                    self.team_tip = ui.tooltip("Team: share request changes through GitHub")
+                self.team_badge.set_visibility(False)
+                team_btn.set_visibility(self.team_enabled)
                 ui.button(icon="refresh", on_click=self.reload_all).props("flat round dense") \
-                    .tooltip("Reload from disk (picks up changes made by teammates)")
+                    .tooltip("Reload from disk")
             ui.input(placeholder="Search requests…", on_change=self.on_filter) \
                 .props("dense outlined clearable").classes("w-full mb-1")
             with ui.scroll_area().classes("w-full flex-grow").style("height: calc(100vh - 150px)"):
@@ -613,6 +620,10 @@ class ClientPage:
                 self.build_ai_panel()
 
         ui.timer(0.5, self.poll_runner)
+        if self.team_enabled:
+            ui.timer(2, self.team_tick)  # your own edits: local and quick
+            ui.timer(600, lambda: self.refresh_team(fetch=True))  # teammates' changes: every 10 minutes
+            ui.timer(3, lambda: self.refresh_team(fetch=True), once=True)
         if time.time() - float(load_ui_state().get("update_checked", 0)) > 12 * 3600:
             ui.timer(4, lambda: self.check_updates(quiet=True), once=True)  # quietly, at most twice a day
         if WS.store.load_errors:
@@ -790,7 +801,7 @@ class ClientPage:
 
     async def delete_collection(self, c: Collection) -> None:
         if await self.confirm("Delete collection?", f"Delete **{c.name}** and all its requests? "
-                              f"(A backup is kept in the collections folder's `.trash`.)", "Delete", "negative"):
+                              f"(A backup is kept in `{WS.store.trash_path()}`.)", "Delete", "negative"):
             WS.delete_collection(c)
             if self.current_cid == c.id:
                 self.current_cid = None
@@ -2750,6 +2761,199 @@ class ClientPage:
             ui.notify("Settings saved", type="positive")
 
     # ================================================================= updates
+    # ================================================================== team (share collections via GitHub)
+    async def refresh_team(self, fetch: bool = False) -> None:
+        if not self.team_enabled or self.team_busy:
+            return
+        self.team_seen = WS.version
+        try:
+            st = await run.io_bound(team.status, fetch)
+        except team.TeamError as exc:
+            st = team.TeamStatus(message=str(exc))
+        self.team_status = st
+        mine, theirs = len(st.changes) + st.unsent, st.behind
+        self.team_badge.set_text(str(mine + theirs))
+        self.team_badge.set_visibility(bool(mine or theirs))
+        self.team_badge.props(f"color={'orange' if theirs else 'primary'}")
+        parts = []
+        if mine:
+            parts.append(f"{mine} change(s) of yours not shared yet")
+        if theirs:
+            parts.append(f"{theirs} change(s) from teammates to get")
+        self.team_tip.set_text("; ".join(parts) or "Team: share request changes through GitHub")
+
+    async def team_tick(self) -> None:
+        if self.team_enabled and WS.version != self.team_seen:
+            await self.refresh_team(fetch=False)
+
+    async def open_team(self) -> None:
+        await self.refresh_team(fetch=True)
+        st = self.team_status or team.TeamStatus()
+        icons = {"added": ("add_circle", "green-7"), "edited": ("edit", "primary"), "deleted": ("delete", "red-7")}
+        with self.dialog_host, ui.dialog() as d, ui.card().classes("w-[640px] max-w-full"):
+            with ui.row().classes("w-full items-center"):
+                ui.label("Team collections").classes("text-lg font-medium")
+                ui.space()
+                ui.button(icon="close", on_click=d.close).props("flat round dense")
+            ui.label("Requests are saved one file each in the project's collections folder on GitHub. "
+                     "Share your changes so teammates get them, and get theirs here.").classes("text-sm text-grey-7")
+            if st.message:
+                ui.label(st.message).classes("text-sm text-orange-9")
+            ui.separator()
+            ui.label("From your team").classes("text-base font-medium")
+            if st.incoming:
+                ui.markdown("\n".join(f"- {line}" for line in st.incoming[:15])).classes("text-sm")
+                ui.button("Get team changes", icon="download",
+                          on_click=lambda: self.team_get(d)).props("no-caps unelevated")
+            else:
+                ui.label("You have everything your teammates shared.").classes("text-sm text-grey-7")
+            ui.separator()
+            ui.label("Your changes (not shared yet)").classes("text-base font-medium")
+            if st.changes:
+                with ui.column().classes("w-full gap-0"):
+                    for ch in st.changes:
+                        icon, color = icons.get(ch.kind, ("edit", "primary"))
+                        with ui.row().classes("w-full items-center no-wrap gap-2"):
+                            ui.icon(icon, color=color, size="xs")
+                            ui.label(f"{ch.kind.capitalize()}: {ch.label}").classes("text-sm flex-grow")
+                            ui.button(icon="undo", on_click=lambda ch=ch: self.team_undo(d, ch)) \
+                                .props("flat round dense size=sm").tooltip("Undo this change")
+            elif st.unsent:
+                ui.label(f"{st.unsent} shared change(s) are saved on this computer but haven't reached GitHub "
+                         "yet. Click Share to send them.").classes("text-sm")
+            else:
+                ui.label("Nothing to share. Edits you make to requests show up here.").classes("text-sm text-grey-7")
+            if st.changes or st.unsent:
+                msg = ui.input("What did you change? (teammates see this)",
+                               value=team.suggest_message(st.changes) if st.changes else "") \
+                    .props("dense outlined").classes("w-full")
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Share my changes", icon="cloud_upload",
+                              on_click=lambda: self.team_share(d, msg.value)).props("no-caps unelevated")
+        d.on("hide", d.delete)
+        d.open()
+
+    async def _team_run(self, fn, *args):
+        """Run a git action in the background with a spinner. Returns (ok, result)."""
+        self.team_busy = True
+        note = ui.notification("Talking to GitHub...", spinner=True, timeout=None)
+        try:
+            return True, await run.io_bound(fn, *args)
+        except team.TeamError as exc:
+            return False, exc
+        finally:
+            note.dismiss()
+            self.team_busy = False
+
+    def _after_team_pull(self, files) -> None:
+        WS.reload()
+        self.render_tree.refresh()
+        self.refresh_collection_options()
+        app_files = [f for f in files if not f.startswith(team.PREFIX)]
+        n = len(files) - len(app_files)
+        ui.notify(f"Got {n} request change(s) from your team." if n else "Up to date.", type="positive")
+        if app_files:
+            self.update_btn.set_visibility(False)
+            with self.dialog_host, ui.dialog() as d, ui.card():
+                ui.label("The app itself was updated too").classes("text-lg font-medium")
+                ui.label("Restart the app to use the new version.").classes("text-sm")
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Later", on_click=d.close).props("flat no-caps")
+                    ui.button("Restart now", icon="restart_alt", on_click=self.restart_app) \
+                        .props("no-caps unelevated")
+            d.on("hide", d.delete)
+            d.open()
+
+    async def team_get(self, dialog, prefer: str = "") -> None:
+        if self.dirty and not await self.confirm("Unsaved request", "The open request has unsaved changes. Save "
+                                                 "them first if you want them shared.", "Continue"):
+            return
+        ok, result = await self._team_run(team.get_latest, prefer)
+        if not ok and isinstance(result, team.Conflict):
+            choice = await self.team_choose(result)
+            if choice:
+                await self.team_get(dialog, choice)
+            return
+        dialog.close()
+        if not ok:
+            ui.notify(str(result), type="negative", multi_line=True, timeout=15000)
+        else:
+            self._after_team_pull(result)
+        await self.refresh_team()
+
+    async def team_share(self, dialog, message: str, prefer: str = "") -> None:
+        if self.dirty and not await self.confirm("Unsaved request", "The open request has unsaved changes, so "
+                                                 "they won't be shared. Click Save first to include them.",
+                                                 "Share without them"):
+            return
+        ok, result = await self._team_run(team.share, message, prefer)
+        if not ok and isinstance(result, team.NeedIdentity):
+            if await self.team_identity():
+                await self.team_share(dialog, message, prefer)
+            return
+        if not ok and isinstance(result, team.Conflict):
+            choice = await self.team_choose(result)
+            if choice:
+                await self.team_share(dialog, message, choice)
+            return
+        dialog.close()
+        if not ok:
+            ui.notify(str(result), type="negative", multi_line=True, timeout=20000)
+        else:
+            ui.notify(result, type="positive")
+            WS.reload()  # teammates' changes may have come in while sharing
+            self.render_tree.refresh()
+            self.refresh_collection_options()
+        await self.refresh_team()
+
+    async def team_choose(self, conflict: "team.Conflict") -> str:
+        names = "\n".join(f"- {team.label(f)}" for f in conflict.files)
+        with self.dialog_host, ui.dialog() as d, ui.card().classes("max-w-xl"):
+            ui.label("You and a teammate changed the same request").classes("text-lg font-medium")
+            ui.markdown(f"{names}\n\nWhich version should everyone use?")
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=lambda: d.submit("")).props("flat no-caps")
+                ui.button("Keep my version", on_click=lambda: d.submit("mine")).props("no-caps outline")
+                ui.button("Keep my teammate's", on_click=lambda: d.submit("theirs")).props("no-caps unelevated")
+        result = await d
+        d.delete()
+        return result or ""
+
+    async def team_identity(self) -> bool:
+        with self.dialog_host, ui.dialog() as d, ui.card().classes("w-[460px] max-w-full"):
+            ui.label("Who's sharing?").classes("text-lg font-medium")
+            ui.label("Asked once. Your name is shown next to your changes on GitHub.").classes("text-sm")
+            name = ui.input("Your name").props("dense outlined").classes("w-full")
+            email = ui.input("Email (the one on your GitHub account)").props("dense outlined").classes("w-full")
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Cancel", on_click=lambda: d.submit(False)).props("flat no-caps")
+                ui.button("Save", on_click=lambda: d.submit(True)).props("no-caps unelevated")
+        ok = await d
+        d.delete()
+        if not ok:
+            return False
+        try:
+            await run.io_bound(team.set_identity, name.value or "", email.value or "")
+        except team.TeamError as exc:
+            ui.notify(str(exc), type="warning")
+            return False
+        return True
+
+    async def team_undo(self, dialog, ch: "team.Change") -> None:
+        if not await self.confirm("Undo this change?", f"**{ch.label}** goes back to the last shared version. "
+                                  "Your change to it is thrown away.", "Undo", "negative"):
+            return
+        ok, result = await self._team_run(team.undo, ch.path)
+        dialog.close()
+        if not ok:
+            ui.notify(str(result), type="negative")
+            return
+        WS.reload()
+        self.render_tree.refresh()
+        self.refresh_collection_options()
+        ui.notify(f"Undid the change to {ch.label}")
+        await self.open_team()
+
     async def check_updates(self, quiet: bool = False) -> None:
         if not quiet:
             note = ui.notification("Checking for updates...", spinner=True, timeout=None)

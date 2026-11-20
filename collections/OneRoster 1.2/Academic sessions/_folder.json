@@ -1,0 +1,9 @@
+{
+  "id": "faf96604ec0c",
+  "name": "Academic sessions",
+  "order": [
+    "All academic sessions.json",
+    "All terms.json",
+    "Terms for school.json"
+  ]
+}

@@ -63,10 +63,20 @@ A lightweight Postman replacement for the PS SYG Support team. Written in Python
 7. **Updates**: when a new version is on GitHub, a green **Update available** button appears at the top.
    Click it, then **Update now** and **Restart now**. You can also check under **Settings (⚙) → Check for
    updates**.
-8. Close the browser tab when you're done. The ⏻ button (top right) fully stops the app.
+8. **Team** (the 👥 button above the request list): share request changes with your teammates.
+   - Add, edit, rename or delete requests as usual and click **Save**. A blue number on 👥 counts your
+     changes that teammates don't have yet. An orange number means teammates shared something new.
+   - Click 👥, check the list, type a short note about what you changed and click **Share my changes**.
+     Click **Get team changes** to pick up theirs. The ↶ next to a change undoes it.
+   - If you and a teammate changed the same request, the app asks which version to keep.
+   - The first time, it asks for your name and email (the one on your GitHub account) to label your changes.
+   - Never put real keys in a request. Use `{{variables}}` and keep the keys in your environment. The app
+     refuses to share a request that contains a real key or secret.
+9. Close the browser tab when you're done. The ⏻ button (top right) fully stops the app.
 
-Your files are in `C:\Users\<you>\SchoologyAPIClient` on Windows or `/Users/<you>/SchoologyAPIClient` on
-a Mac (collections, environments, results, logs).
+Requests live in the project folder's `collections` folder, one file per request (see *Team collections*
+below). Everything personal is in `C:\Users\<you>\SchoologyAPIClient` on Windows or
+`/Users/<you>/SchoologyAPIClient` on a Mac: environments, results, recent lookups, logs and the trash.
 
 ---
 
@@ -118,15 +128,65 @@ Team members download the zip for their computer, unzip it and open the app. The
 to `main` also runs the tests there. **Actions → Build → Run workflow** builds without publishing (the zips
 appear under that run's *Artifacts*).
 
-### Sharing collections across the team
-**Settings (⚙) → Collections folder**: point everyone at the same shared folder (OneDrive/SharePoint/network
-drive) so the team uses one set of collections. Use the ↻ button in the sidebar to pick up teammates' changes.
-Keep **Environments** local: the secrets themselves live in each person's Keychain / Credential Manager, so
-an environment file copied to another computer arrives without its secrets (the app says so, and you type them
-in again). Deleted items are copied to a
-`.trash` folder first.
+### Team collections (one file per request, shared through GitHub)
+When the app runs from a `git clone`, it uses the repo's **`collections/`** folder, laid out like the app's
+tree:
+```
+collections/
+  Schoology API/                  one folder per collection
+    _collection.json              collection name, description, auth, variables, order of items
+    Users/                        one folder per folder
+      _folder.json                folder name, description, order of items
+      Get user.json               one file per request
+```
+A request file is short and can be edited by hand, in the app or on GitHub:
+```json
+{
+  "name": "Get user",
+  "method": "GET",
+  "url": "{{base_url}}/users/{{user_id}}",
+  "description": "Schoology user id (not the SIS id).",
+  "params": [{"key": "extended", "value": "true"}],
+  "id": "e7a33968ded2"
+}
+```
+Only `name`, `method` and `url` are required. Optional fields: `description`, `params`, `headers`,
+`body_mode` (`json`, `text`, `urlencoded`, `form`), `body`, `form`, `auth` (default: use the collection's),
+`fetch_all_pages`, and `"enabled": false` on a param or header. A new file without an `id` or an `"order"`
+entry still shows up (after the listed items, A-Z). A deleted file just disappears. If a file has a typo, the
+app skips that one file and says which one.
 
-You can also set `RESTCLIENT_HOME` to move the whole data folder.
+**Working together**:
+- In the app: the **Team** (👥) button shows your changes, **Share my changes** commits and pushes only
+  `collections/`, and **Get team changes** pulls. If two people changed the same request, it asks whose
+  version to keep. It checks GitHub every 10 minutes. App updates still come through **Update available**,
+  and your unshared request edits never block them.
+- In git directly: edit, `git add collections`, `git commit`, `git pull --rebase`, `git push`. Pull requests
+  work too, if you'd rather review changes first.
+
+**Setting up a teammate**:
+1. On GitHub: repo **Settings → Collaborators → Add people**, then add their GitHub account (they accept the
+   email invite). They need this to share changes.
+2. They install with `git clone` (or GitHub Desktop → *Clone repository*), not a ZIP download.
+3. The first share asks GitHub to sign them in. If the app says GitHub needs a sign-in, they open a terminal
+   in the app folder, type `git push`, and sign in once in the window that appears (or sign in to GitHub
+   Desktop). Then they click **Share** again.
+
+**This repo is public**: anyone can read the request files. They never contain keys: the app blocks
+sharing a request with a real key, token or password in it. Still, don't put district names, student ids or
+notes about real people in requests or descriptions. Ids belong in environments and CSVs (which stay on
+each computer). If that's too limiting, make the repository private (repo Settings → General → Danger
+Zone → *Change visibility*). Everything keeps working. The stand-alone build's update check would then
+need a different place to download from.
+
+Deleted requests and collections are copied to `SchoologyAPIClient/trash` first. The stand-alone build
+(no git) keeps collections in `SchoologyAPIClient/collections` instead. To share those, point
+**Settings (⚙) → Collections folder** at a shared drive.
+
+**Earlier installs**: before this version, collections lived in `SchoologyAPIClient/collections` as one
+file each. A git copy now uses the repo's `collections/` folder, and the old files are left where they are.
+To bring across a request you made yourself, use **Import** on the old file. Old one-file collections in a
+collections folder are converted to the new layout automatically.
 
 ### Command line
 On a Mac use `.venv/bin/python` instead of `.venv\Scripts\python`.
@@ -248,6 +308,8 @@ restclient/
   models.py               collections / folders / requests / environments (JSON)
   variables.py            {{variable}} substitution and precedence
   storage.py, workspace.py  load/save files
+  collection_files.py     collections on disk: a folder per collection, a file per request
+  team.py                 Team button: show / share / get / undo collection changes with git
   postman.py              Postman import/export
   launcher.py             Database tab: run sign-in commands, list/open connection files
   secret_store.py         keys/secrets in the Mac Keychain / Windows Credential Manager
@@ -258,11 +320,13 @@ restclient/
   ui.py                   NiceGUI interface
   mcp_server.py           AI tools (MCP)
   cli.py                  command line
-examples/                 starter collections, example environments, sample CSVs
+collections/              the team's shared requests (one file each), edited in the app or by hand
+examples/                 example environments, sample CSVs
 tests/test_core.py        tests against a local mock API (OAuth1/2, paging, runner, Postman)
 tests/test_assistant.py   local AI assistant + knowledge base (fake Ollama)
 tests/test_launcher.py    Database tab command runner and connection list
 tests/test_support.py     keychain, redaction, tips, ticket text, connection test, recent, updates, streaming
+tests/test_team.py        one-file-per-request format, sharing between two clones, clashes, undo
 .github/workflows/build.yml  tests on every push; Windows + Mac builds and a Release for each v* tag
 ```
 
@@ -279,8 +343,6 @@ tests/test_support.py     keychain, redaction, tips, ticket text, connection tes
   connection setup.
 - **OneRoster tokens**: every OneRoster request gets its OAuth 2.0 bearer token automatically (collection
   auth: `{{token_url}}`, `{{client_id}}`, `{{client_secret}}`). To troubleshoot a token problem, send
-  **Auth → Get access token (debug)** to see the token server's raw response. Starter collections are only
-  copied on first run, so an existing install gets new starter requests by importing
-  `examples/collections/OneRoster 1.x.json` (sidebar Import button).
+  **Auth → Get access token (debug)** to see the token server's raw response.
 - Variable precedence: collection variables < environment variables < CSV columns / values passed in.
   Blank collection/environment values count as "not set", so the app warns instead of calling `/users/`.

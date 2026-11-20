@@ -1,0 +1,13 @@
+{
+  "name": "Find users by school UID",
+  "method": "GET",
+  "url": "{{base_url}}/users",
+  "description": "Look up users by their unique ID from the SIS. Comma-separate several UIDs.",
+  "params": [
+    {
+      "key": "school_uids",
+      "value": "{{school_uid}}"
+    }
+  ],
+  "id": "5d238ff06633"
+}

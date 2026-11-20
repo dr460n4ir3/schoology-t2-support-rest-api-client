@@ -1,0 +1,6 @@
+{
+  "name": "Get school",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/schools/{{school_sourcedId}}",
+  "id": "f9a8e18a82ab"
+}

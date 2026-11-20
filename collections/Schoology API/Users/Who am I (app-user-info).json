@@ -1,0 +1,7 @@
+{
+  "name": "Who am I (app-user-info)",
+  "method": "GET",
+  "url": "{{base_url}}/app-user-info",
+  "description": "Confirms the API keys work and shows which user/school they belong to.",
+  "id": "dd174d3e2ead"
+}

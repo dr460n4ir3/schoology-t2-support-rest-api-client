@@ -1,0 +1,12 @@
+{
+  "id": "2976b98e9c9d",
+  "name": "Courses & classes",
+  "order": [
+    "All courses.json",
+    "All classes.json",
+    "Get class.json",
+    "Classes for school.json",
+    "Students in class.json",
+    "Teachers in class.json"
+  ]
+}

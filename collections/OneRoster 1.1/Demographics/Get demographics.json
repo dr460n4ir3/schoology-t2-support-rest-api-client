@@ -1,0 +1,6 @@
+{
+  "name": "Get demographics",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/demographics/{{user_sourcedId}}",
+  "id": "74defb5b5b19"
+}

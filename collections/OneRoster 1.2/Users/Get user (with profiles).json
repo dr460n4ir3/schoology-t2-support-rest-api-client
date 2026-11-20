@@ -1,0 +1,7 @@
+{
+  "name": "Get user (with profiles)",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/users/{{user_sourcedId}}",
+  "description": "OneRoster 1.2 adds userProfiles, primaryOrg and roles[] to the user record.",
+  "id": "fe5e3178f138"
+}

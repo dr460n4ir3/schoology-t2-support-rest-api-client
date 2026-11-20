@@ -1,0 +1,21 @@
+{
+  "name": "All schools",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/schools",
+  "params": [
+    {
+      "key": "limit",
+      "value": "100"
+    },
+    {
+      "key": "offset",
+      "value": "0"
+    },
+    {
+      "key": "filter",
+      "value": "status='active'",
+      "enabled": false
+    }
+  ],
+  "id": "0d73c570b783"
+}

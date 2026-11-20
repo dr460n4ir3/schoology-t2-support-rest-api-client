@@ -1,0 +1,21 @@
+{
+  "name": "Classes for school",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/schools/{{school_sourcedId}}/classes",
+  "params": [
+    {
+      "key": "limit",
+      "value": "100"
+    },
+    {
+      "key": "offset",
+      "value": "0"
+    },
+    {
+      "key": "filter",
+      "value": "status='active'",
+      "enabled": false
+    }
+  ],
+  "id": "a77d0cd4dd3b"
+}

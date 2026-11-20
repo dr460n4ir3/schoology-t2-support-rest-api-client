@@ -1,0 +1,21 @@
+{
+  "name": "Terms for school",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/schools/{{school_sourcedId}}/terms",
+  "params": [
+    {
+      "key": "limit",
+      "value": "100"
+    },
+    {
+      "key": "offset",
+      "value": "0"
+    },
+    {
+      "key": "filter",
+      "value": "status='active'",
+      "enabled": false
+    }
+  ],
+  "id": "fc58b6874b9e"
+}

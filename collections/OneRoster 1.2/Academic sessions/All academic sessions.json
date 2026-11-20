@@ -1,0 +1,21 @@
+{
+  "name": "All academic sessions",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/academicSessions",
+  "params": [
+    {
+      "key": "limit",
+      "value": "100"
+    },
+    {
+      "key": "offset",
+      "value": "0"
+    },
+    {
+      "key": "filter",
+      "value": "status='active'",
+      "enabled": false
+    }
+  ],
+  "id": "aab42961c801"
+}

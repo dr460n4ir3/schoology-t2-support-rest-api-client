@@ -1,0 +1,6 @@
+{
+  "name": "Get school",
+  "method": "GET",
+  "url": "{{base_url}}/schools/{{school_id}}",
+  "id": "f1877048c990"
+}

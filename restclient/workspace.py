@@ -14,12 +14,14 @@ class Workspace:
         if seed:
             self.store.seed_examples()
         self.collections: list[Collection] = []
+        self.version = 0  # bumped on every collection change (the UI uses it to refresh the Team badge)
         self.environments: list[Environment] = []
         self.reload()
 
     def reload(self) -> None:
         self.store = Store(self.settings)
         self.collections = self.store.load_collections()
+        self.version = getattr(self, "version", 0) + 1
         self.environments = self.store.load_environments()
 
     # ------------------------------------------------------------------ lookups
@@ -50,12 +52,14 @@ class Workspace:
     # ------------------------------------------------------------------ changes
     def save_collection(self, c: Collection) -> None:
         self.store.save_collection(c)
+        self.version += 1
         if c not in self.collections:
             self.collections.append(c)
         self.collections.sort(key=lambda x: x.name.lower())
 
     def delete_collection(self, c: Collection) -> None:
         self.store.delete_collection(c)
+        self.version += 1
         self.collections = [x for x in self.collections if x.id != c.id]
 
     def save_environment(self, e: Environment) -> None:

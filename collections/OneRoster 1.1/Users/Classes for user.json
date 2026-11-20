@@ -1,0 +1,21 @@
+{
+  "name": "Classes for user",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/users/{{user_sourcedId}}/classes",
+  "params": [
+    {
+      "key": "limit",
+      "value": "100"
+    },
+    {
+      "key": "offset",
+      "value": "0"
+    },
+    {
+      "key": "filter",
+      "value": "status='active'",
+      "enabled": false
+    }
+  ],
+  "id": "5d6e47c83655"
+}

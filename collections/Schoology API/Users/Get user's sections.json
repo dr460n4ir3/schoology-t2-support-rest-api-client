@@ -1,0 +1,6 @@
+{
+  "name": "Get user's sections",
+  "method": "GET",
+  "url": "{{base_url}}/users/{{user_id}}/sections",
+  "id": "3b6b94472587"
+}

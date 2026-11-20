@@ -1,0 +1,21 @@
+{
+  "name": "All classes",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/classes",
+  "params": [
+    {
+      "key": "limit",
+      "value": "100"
+    },
+    {
+      "key": "offset",
+      "value": "0"
+    },
+    {
+      "key": "filter",
+      "value": "status='active'",
+      "enabled": false
+    }
+  ],
+  "id": "e33af2cfe13f"
+}

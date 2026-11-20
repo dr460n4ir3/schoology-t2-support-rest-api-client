@@ -1,0 +1,13 @@
+{
+  "name": "Find user by identifier",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/users",
+  "description": "identifier is usually the SIS student/staff number.",
+  "params": [
+    {
+      "key": "filter",
+      "value": "identifier='{{identifier}}'"
+    }
+  ],
+  "id": "c862a9e14f6d"
+}

@@ -1,0 +1,21 @@
+{
+  "name": "Students in class",
+  "method": "GET",
+  "url": "{{oneroster_base_url}}/classes/{{class_sourcedId}}/students",
+  "params": [
+    {
+      "key": "limit",
+      "value": "100"
+    },
+    {
+      "key": "offset",
+      "value": "0"
+    },
+    {
+      "key": "filter",
+      "value": "status='active'",
+      "enabled": false
+    }
+  ],
+  "id": "08eccf93d020"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Get course sections",
+  "method": "GET",
+  "url": "{{base_url}}/courses/{{course_id}}/sections",
+  "id": "a05219bc5205"
+}
