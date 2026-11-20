@@ -11,6 +11,7 @@ import copy
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -19,20 +20,23 @@ from pathlib import Path
 
 from nicegui import app, run, ui
 
-from . import APP_NAME, __version__, copilot_setup, engine, launcher, postman, runner
-from .assistant import MAX_TOOL_ROUNDS, Assistant
+from . import APP_NAME, __version__, copilot_setup, engine, launcher, postman, redact, runner, secret_store, support, \
+    updater
+from .assistant import MAX_TOOL_ROUNDS, Assistant, strip_thinking
 from .config import app_home, load_settings, save_settings
 from .knowledge import SUPPORTED as KB_TYPES, open_kb
 from . import ollama_service
 from .ollama import DOWNLOAD_URL as OLLAMA_DOWNLOAD_URL, Ollama, OllamaError
 from .models import (AUTH_TYPES, BODY_MODES, METHODS, OAUTH1_SIGNATURES, KV, Auth, Collection, Environment,
                      Folder, Request)
-from .variables import is_unset, missing_variables, request_variables
+from .variables import effective_auth, is_unset, missing_variables, request_variables
 from .workspace import Workspace
 
 log = logging.getLogger(__name__)
 
 WS: Workspace = None  # type: ignore[assignment]  # created in start()
+PORT = 8765  # the port this copy is running on (set in start(); used to restart after an update)
+STARTED = str(time.time())  # changes on every start: the page uses it to notice the app restarted
 DB_RUNNER = launcher.StepRunner()  # one per app, so a page reload keeps the sign-in output
 
 METHOD_COLORS = {"GET": "text-green-8", "POST": "text-orange-9", "PUT": "text-blue-8", "PATCH": "text-purple-7",
@@ -347,6 +351,58 @@ class AuthEditor:
                         .props("flat dense no-caps")
 
 
+class StreamBubble:
+    """A chat answer that grows on screen while the model writes it.
+
+    push() is called from the worker thread with each new piece; a UI timer copies the text to the screen.
+    Text that looks like a tool call ({...}) or hidden reasoning (<think>) is not shown.
+    """
+
+    def __init__(self, page: "ClientPage"):
+        self.page = page
+        self.parts: list[str] = []
+        self.shown = ""
+        with page.chat_log:
+            self.column = ui.column().classes("w-full gap-1 items-start")
+        with self.column:
+            with ui.element("div").classes("rc-bot-msg"):
+                self.md = ui.markdown("")
+            self.timer = ui.timer(0.15, self.update)
+        self.column.set_visibility(False)
+
+    def push(self, text: str) -> None:  # worker thread: only appends
+        self.parts.append(text)
+
+    def visible_text(self) -> str:
+        text = "".join(self.parts)
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+        if "<think>" in text:
+            text = text[:text.index("<think>")]
+        text = text.strip()
+        return "" if text.startswith(("{", "[", "```json", "<tool")) else text
+
+    def update(self) -> None:
+        text = self.visible_text()
+        if text and text != self.shown:
+            self.shown = text
+            self.md.set_content(text)
+            self.column.set_visibility(True)
+            self.page.chat_status_label.text = "Writing..."
+            self.page.chat_scroll.scroll_to(percent=1.0)
+
+    def finish(self, answer: str, sources: list[dict] | None) -> None:
+        self.timer.cancel()
+        self.md.set_content(answer or "_(no answer)_")
+        self.column.set_visibility(True)
+        if sources:
+            with self.column:
+                self.page.source_chips(sources)
+
+    def remove(self) -> None:
+        self.timer.cancel()
+        self.column.delete()
+
+
 # ======================================================================= the page ======
 class ClientPage:
     def __init__(self):
@@ -369,6 +425,10 @@ class ClientPage:
         self.running = False
         self._shown_results = -1
         self.env_edit: Environment | None = None
+        self.env_health: dict[str, support.HealthResult] = {}  # environment id -> last connection test
+        self.last_meta: tuple[str, str, str] = ("", "", "")  # (request title, environment, auth type) of last send
+        self.update_status: updater.UpdateStatus | None = None
+        self.rerun_entry: dict | None = None  # the Recent entry that was loaded last
         self._ready = False  # ignore change events fired while the page is still being built
 
         self.build()
@@ -501,6 +561,10 @@ class ClientPage:
                                         on_change=self.on_env_change) \
                 .props('dense outlined options-dense placeholder="No environment"').classes("w-80")
             self.refresh_env_options()
+            self.update_btn = ui.button("Update available", icon="system_update",
+                                        on_click=lambda: self.show_update_dialog(self.update_status)) \
+                .props("flat dense no-caps color=positive").tooltip("A newer version of the app is on GitHub")
+            self.update_btn.set_visibility(False)
             self.theme_btn = ui.button(on_click=self.toggle_dark).props("flat round dense")
             with self.theme_btn:
                 self.theme_tip = ui.tooltip("")
@@ -549,6 +613,8 @@ class ClientPage:
                 self.build_ai_panel()
 
         ui.timer(0.5, self.poll_runner)
+        if time.time() - float(load_ui_state().get("update_checked", 0)) > 12 * 3600:
+            ui.timer(4, lambda: self.check_updates(quiet=True), once=True)  # quietly, at most twice a day
         if WS.store.load_errors:
             ui.notify("Some files could not be loaded: " + "; ".join(WS.store.load_errors), type="warning",
                       multi_line=True, timeout=10000)
@@ -860,13 +926,18 @@ class ClientPage:
             self.name_input = ui.input(on_change=self.on_name_change) \
                 .props("dense borderless input-class='text-lg font-medium'").classes("flex-grow")
             self.dirty_badge = ui.badge("unsaved", color="orange").props("outline")
+            with ui.button("Recent", icon="history").props("flat no-caps"):
+                ui.tooltip("Your last lookups, with the ids used. Kept on this computer only.")
+                with ui.menu().props('max-width=720px anchor="bottom right" self="top right"') as self.recent_menu:
+                    self.render_recent()
             ui.button("New", icon="add", on_click=self.new_request).props("flat no-caps")
             ui.button("Save", icon="save", on_click=self.save_current).props("no-caps unelevated")
             with ui.button(icon="more_vert").props("flat round"):
                 with ui.menu():
                     ui.menu_item("Save as…", self.save_as)
                     ui.menu_item("Preview (what will be sent)", self.preview_current)
-                    ui.menu_item("Copy as cURL", self.copy_curl)
+                    ui.menu_item("Copy as cURL (keys hidden)", lambda: self.copy_curl(False))
+                    ui.menu_item("Copy as cURL with keys", lambda: self.copy_curl(True))
         # Ctrl+S / Ctrl+Enter: handled in the browser so the browser's own "Save page" dialog is suppressed
         ui.add_body_html("""<script>
             document.addEventListener('keydown', (e) => {
@@ -928,11 +999,18 @@ class ClientPage:
                 self.status_badge.set_visibility(False)
                 self.meta_label = ui.label("Send a request to see the response here.").classes("text-sm text-grey-7")
                 ui.space()
+                ui.button("Copy for ticket", icon="assignment", on_click=self.copy_for_ticket) \
+                    .props("flat dense no-caps").tooltip("Request, environment, status, meaning and key fields, "
+                                                         "with keys and secrets hidden")
                 ui.button(icon="content_copy", on_click=self.copy_response).props("flat round dense") \
                     .tooltip("Copy response body")
                 ui.button(icon="download", on_click=self.download_response).props("flat round dense") \
                     .tooltip("Save response to a file")
             self.note_label = ui.label().classes("text-sm text-blue-8")
+            with ui.row().classes("items-start no-wrap gap-2 text-sm text-orange-9") as self.tip_row:
+                ui.icon("lightbulb", size="xs").classes("mt-[2px]")
+                self.tip_label = ui.label()
+            self.tip_row.set_visibility(False)
             with ui.tabs().props("align=left no-caps dense") as rtabs:
                 ui.tab("Body", label="Body")
                 self.resp_headers_tab = ui.tab("Headers", label="Headers")
@@ -1288,15 +1366,22 @@ class ClientPage:
             rr, res = await run.io_bound(engine.execute, req, c, env, WS.settings)
         finally:
             self.send_btn.props(remove="loading")
-        self.show_result(rr, res)
-        if res.status in (401, 403):
-            self.note_label.text = (
-                f"{res.status}: the server rejected the credentials. Check: (1) the right environment is selected; "
-                "(2) the key/secret in it are saved and are for this server (district/SIS); (3) the response body "
-                "above, which usually says why; (4) the 'Request sent' tab, to compare with Postman (secrets masked).")
+        auth_type = effective_auth(req, c, env).type
+        title = c.request_label(req) if c and c.find_container(req.id) is not None else req.name
+        self.last_meta = (title, env.name if env else "", auth_type)
+        self.show_result(rr, res, support.error_tip(res, auth_type))
+        if res.status is not None:  # it reached the server: remember it under Recent (this computer only)
+            try:
+                again = self.rerun_entry if self.rerun_entry and                     self.rerun_entry.get("request", {}).get("id") == req.id else None
+                support.record_lookup(req, c, env, res, previous=again)
+                self.render_recent.refresh()
+            except OSError as exc:
+                log.warning("Could not save the recent lookup: %s", exc)
 
-    def show_result(self, rr: engine.ResolvedRequest, res: engine.Result) -> None:
+    def show_result(self, rr: engine.ResolvedRequest, res: engine.Result, tip: str = "") -> None:
         self.last_result, self.last_resolved = res, rr
+        self.tip_label.text = tip
+        self.tip_row.set_visibility(bool(tip))
         self.status_badge.set_visibility(True)
         if res.error:
             self.status_badge.text = "Error"
@@ -1329,26 +1414,98 @@ class ClientPage:
             extra = "\n\n⚠ Not set: " + ", ".join("{{%s}}" % v for v in sorted(rr.unresolved()))
         self.show_text("Preview — nothing has been sent", rr.describe() + extra)
 
-    def copy_curl(self) -> None:
+    def copy_curl(self, include_credentials: bool = False) -> None:
         rr = engine.resolve(self.current, self.collection(), self.env())
         try:
-            curl = engine.to_curl(rr, WS.settings)
+            curl = engine.to_curl(rr, WS.settings, include_credentials=include_credentials)
         except Exception as exc:
             ui.notify(f"Could not build cURL: {exc}", type="negative")
             return
-        self.show_text("cURL (includes credentials, so share it carefully)", curl, "Shell")
+        title = ("cURL WITH keys: only for your own use, never paste it into a ticket or chat"
+                 if include_credentials else "cURL (keys and secrets hidden, safe to share)")
+        self.show_text(title, curl, "Shell")
+
+    def _shareable_body(self) -> str:
+        res, rr = self.last_result, self.last_resolved
+        if not res:
+            return ""
+        return redact.redact(res.pretty_body() or res.error or "", rr.auth.secret_values() if rr else ())
 
     def copy_response(self) -> None:
         if self.last_result:
-            ui.clipboard.write(self.last_result.pretty_body() or self.last_result.error or "")
-            ui.notify("Response copied", timeout=1000)
+            ui.clipboard.write(self._shareable_body())
+            ui.notify("Response copied (keys and tokens hidden)", timeout=1500)
+
+    def copy_for_ticket(self) -> None:
+        if not self.last_result or not self.last_resolved:
+            ui.notify("Send a request first", type="warning")
+            return
+        title, env_name, auth_type = self.last_meta
+        ui.clipboard.write(support.ticket_text(title, env_name, self.last_resolved, self.last_result, auth_type))
+        ui.notify("Copied for a ticket: keys and secrets are hidden. Paste it into the ticket.", type="positive")
 
     def download_response(self) -> None:
         if not self.last_result:
             return
         is_json = self.last_result.json() is not None
         name = "".join(ch if ch.isalnum() or ch in "-_ " else "_" for ch in self.current.name).strip() or "response"
-        ui.download.content(self.last_result.pretty_body().encode("utf-8"), f"{name}.{'json' if is_json else 'txt'}")
+        ui.download.content(self._shareable_body().encode("utf-8"), f"{name}.{'json' if is_json else 'txt'}")
+
+    # ------------------------------------------------------- recent lookups
+    @ui.refreshable_method
+    def render_recent(self) -> None:
+        entries = support.load_recent()[:10]
+        if not entries:
+            with ui.column().classes("p-3 gap-1"):
+                ui.label("No recent lookups yet.").classes("text-sm")
+                ui.label("Every request you send is listed here with the ids it used, so you can run it again. "
+                         "Kept only on this computer.").classes("text-xs text-grey-7 max-w-sm")
+            return
+        with ui.list().props("dense").classes("min-w-[420px]"):
+            for entry in entries:
+                status = str(entry.get("status", ""))
+                with ui.item(on_click=lambda e=entry: self.rerun_recent(e)).props("clickable v-close-popup"):
+                    with ui.item_section().props("side"):
+                        method_label(entry.get("method", "GET"), "w-12 text-right")
+                    with ui.item_section():
+                        ui.item_label(support.recent_title(entry)).classes("text-sm")
+                        ui.item_label(" · ".join(x for x in (entry.get("environment") or "no environment",
+                                                             support.age_text(entry.get("when", "")))
+                                                 if x)).props("caption")
+                    with ui.item_section().props("side"):
+                        color = "green" if status.startswith(("2", "3")) else "red"
+                        ui.badge(status, color=color).props("outline")
+        ui.separator()
+        with ui.row().classes("w-full items-center px-3 py-1"):
+            ui.label("Saved on this computer only.").classes("text-xs text-grey-7 flex-grow")
+            ui.button("Clear", icon="delete_sweep", on_click=self.clear_recent).props("flat dense no-caps size=sm")
+
+    def clear_recent(self) -> None:
+        support.clear_recent()
+        self.render_recent.refresh()
+        ui.notify("Recent lookups cleared")
+
+    async def rerun_recent(self, entry: dict) -> None:
+        self.recent_menu.close()
+        if self.dirty and not await self.confirm("Discard changes?", "The open request has unsaved changes.",
+                                                 "Discard changes", "negative"):
+            return
+        req = Request.from_dict(entry.get("request") or {})
+        c = WS.collection_by_id(entry.get("collection_id"))
+        original = c.find_request(entry.get("request_id", "")) if c else None
+        if original is not None and original.auth.type not in ("inherit", "none"):
+            req.auth = copy.deepcopy(original.auth)  # its own credentials were not stored with the lookup
+        env = WS.environment_by_id(entry.get("environment_id"))
+        if env is not None and env.id != self.env_id:
+            self.env_select.set_value(env.id)
+            ui.notify(f"Switched to environment '{env.name}'", timeout=2000)
+        elif env is None and entry.get("environment"):
+            ui.notify(f"Environment '{entry['environment']}' no longer exists: using the selected one.",
+                      type="warning")
+        self.load_request(req, c.id if c else None)
+        self.rerun_entry = entry  # so the re-run keeps its name and ids under Recent
+        self.tabs.set_value("Request")
+        await self.send_current()
 
     # ============================================================ bulk runner
     def build_runner_panel(self) -> None:
@@ -1825,6 +1982,8 @@ class ClientPage:
                 with ui.row().classes("w-full items-center"):
                     ui.label("Environments").classes("font-semibold")
                     ui.space()
+                    ui.button(icon="network_check", on_click=self.test_all_environments) \
+                        .props("flat round dense").tooltip("Test all: check every environment's keys work")
                     ui.button(icon="add", on_click=self.new_environment).props("flat round dense") \
                         .tooltip("New environment")
                     ui.button(icon="upload_file", on_click=self.open_import).props("flat round dense") \
@@ -1845,11 +2004,16 @@ class ClientPage:
                         .classes(f"req-item {'active' if active else ''}").props("clickable"):
                     with ui.item_section():
                         ui.item_label(env.name)
-                        if env.auth.type != "inherit":
-                            ui.item_label(f"auth: {env.auth.type}").props("caption")
-                    if env.id == self.env_id:
+                        captions = (["in use"] if env.id == self.env_id else []) + \
+                            ([f"auth: {env.auth.type}"] if env.auth.type != "inherit" else [])
+                        if captions:
+                            ui.item_label(" · ".join(captions)).props("caption")
+                    health = self.env_health.get(env.id)
+                    if health is not None:
                         with ui.item_section().props("side"):
-                            ui.icon("check_circle", color="green", size="xs").tooltip("In use")
+                            ui.icon("check_circle" if health.ok else "error", size="xs",
+                                    color="green" if health.ok else "red") \
+                                .tooltip(health.summary + (f" - {health.tip}" if health.tip else ""))
 
     async def new_environment(self) -> None:
         name = await self.prompt("New environment", "Name (e.g. 'Springfield USD - PowerSchool OneRoster 1.1')")
@@ -1871,6 +2035,9 @@ class ClientPage:
                     .props("outlined dense").classes("flex-grow text-lg")
                 ui.button("Use this environment", icon="check",
                           on_click=lambda: (self.env_select.set_value(work.id))).props("outline no-caps")
+                test_btn = ui.button("Test connection", icon="network_check").props("outline no-caps") \
+                    .tooltip("Sends one harmless request (e.g. 'Who am I') with these keys")
+                test_btn.on_click(lambda: self.test_environment(work, test_btn))
                 ui.button("Save", icon="save", on_click=lambda: self.save_environment(work)).props("no-caps unelevated")
                 with ui.button(icon="more_vert").props("flat round"):
                     with ui.menu():
@@ -1879,6 +2046,8 @@ class ClientPage:
                             json.dumps(postman.export_environment(work), indent=2).encode(),
                             f"{work.name}.postman_environment.json"))
                         ui.menu_item("Delete", lambda: self.delete_environment(work)).classes("text-red-8")
+            self.env_test_area = ui.column().classes("w-full gap-0")
+            self.render_env_test(work.id)
             ui.textarea("Notes", value=work.description, on_change=lambda e: setattr(work, "description", e.value)) \
                 .props("outlined dense autogrow").classes("w-full")
             ui.label("Variables").classes("font-semibold mt-2")
@@ -1907,6 +2076,49 @@ class ClientPage:
         self.update_var_warning()
         self.update_runner_check()
         ui.notify(f"Saved {work.name}", type="positive")
+
+    def render_env_test(self, env_id: str) -> None:
+        self.env_test_area.clear()
+        health = self.env_health.get(env_id)
+        if health is None:
+            return
+        with self.env_test_area:
+            with ui.row().classes("items-center no-wrap gap-2"):
+                ui.icon("check_circle" if health.ok else "error", color="green" if health.ok else "red")
+                ui.label(health.summary).classes("font-medium " + ("text-green-8" if health.ok else "text-red-8"))
+                if health.request:
+                    ui.label(f"using {health.request}").classes("text-xs text-grey-7")
+            if health.tip:
+                ui.label(health.tip).classes("text-sm text-orange-9")
+
+    async def test_environment(self, work: Environment, button=None) -> None:
+        if button is not None:
+            button.props("loading")
+        try:
+            self.env_health[work.id] = await run.io_bound(support.health_check, WS.collections, work, WS.settings)
+        finally:
+            if button is not None:
+                button.props(remove="loading")
+        if self.env_edit is not None and self.env_edit.id == work.id:
+            self.render_env_test(work.id)
+        self.render_env_list.refresh()
+
+    async def test_all_environments(self) -> None:
+        if not WS.environments:
+            return
+        note = ui.notification("Testing environments...", spinner=True, timeout=None)
+        ok = 0
+        for env in list(WS.environments):
+            note.message = f"Testing {env.name}..."
+            result = await run.io_bound(support.health_check, WS.collections, env, WS.settings)
+            self.env_health[env.id] = result
+            ok += result.ok
+            self.render_env_list.refresh()
+        note.message, note.spinner, note.timeout = (f"{ok} of {len(WS.environments)} environments connected "
+                                                    "(hover a red icon to see why)"), False, 6
+        note.type = "positive" if ok == len(WS.environments) else "warning"
+        if self.env_edit is not None:
+            self.render_env_test(self.env_edit.id)
 
     async def duplicate_environment(self, work: Environment) -> None:
         name = await self.prompt("Duplicate environment", "New name", work.name + " (copy)")
@@ -1956,7 +2168,11 @@ class ClientPage:
                         ui.spinner("dots", size="md", color="primary")
                         self.chat_status_label = ui.label("").classes("text-sm text-grey-7")
                     self.chat_status.set_visibility(False)
+                self.chat_attachment: tuple[str, str, str] | None = None  # (name, text, description)
+                self.render_attachment()
                 with ui.row().classes("w-full items-end no-wrap gap-2 p-3 border-t"):
+                    ui.button(icon="attach_file", on_click=self.open_attach_dialog).props("flat round") \
+                        .tooltip("Attach a query result (CSV, JSON or text) to ask about. It stays on this computer.")
                     self.chat_input = ui.textarea(
                         placeholder="Ask about a user, section, sync error, ...  (Enter sends, Shift+Enter = new line)") \
                         .props("outlined dense autogrow rows=1").classes("flex-grow")
@@ -2198,9 +2414,58 @@ class ClientPage:
                         ui.chip(q, on_click=lambda q=q: self.chat_input.set_value(q)) \
                             .props("outline clickable color=primary").classes("text-xs")
 
+    @ui.refreshable_method
+    def render_attachment(self) -> None:
+        if not self.chat_attachment:
+            return
+        name, _, note = self.chat_attachment
+        with ui.row().classes("w-full items-center no-wrap gap-2 px-3 pt-2"):
+            ui.chip(f"{name} · {note}", icon="table_view", removable=True, on_value_change=self.remove_attachment) \
+                .props("outline color=primary dense").classes("text-xs")
+            ui.label("Included with every question until you remove it.").classes("text-xs text-grey-7")
+
+    def open_attach_dialog(self) -> None:
+        if not self.ollama_is_local():
+            ui.notify("The assistant's AI isn't on this computer, so attached data would leave it. "
+                      "Attaching is turned off.", type="warning", multi_line=True)
+            return
+        with self.dialog_host, ui.dialog() as d, ui.card().classes("w-[520px] max-w-full"):
+            ui.label("Attach data").classes("text-lg font-medium")
+            ui.markdown("Export a query result from your database app (e.g. Sequel Ace: **File → Export → CSV**), "
+                        "then choose it here. The file is read into memory only: it isn't saved anywhere and "
+                        "never leaves this computer.").classes("text-sm")
+            ui.upload(auto_upload=True, max_files=1, on_upload=lambda e: self.handle_attachment(e, d)) \
+                .props(f'accept="{",".join(support.ATTACH_TYPES)}" flat bordered label="Choose a CSV, JSON or text file"') \
+                .classes("w-full")
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Cancel", on_click=d.close).props("flat no-caps")
+        d.on("hide", d.delete)
+        d.open()
+
+    async def handle_attachment(self, e, dialog) -> None:
+        name = e.file.name
+        data = await e.file.read()
+        try:
+            text, note = await run.io_bound(support.summarize_attachment, name, data)
+        except (ValueError, UnicodeError) as exc:
+            ui.notify(f"Couldn't read {name}: {exc}", type="negative")
+            return
+        self.chat_attachment = (name, text, note)
+        self.get_assistant().attachment = (name, text)
+        dialog.close()
+        self.render_attachment.refresh()
+        ui.notify(f"Attached {name}. Ask your question about it.", type="positive")
+
+    def remove_attachment(self, *_) -> None:
+        self.chat_attachment = None
+        if self.assistant:
+            self.assistant.attachment = None
+        self.render_attachment.refresh()
+
     def new_chat(self) -> None:
         if self.chat_busy:
             return
+        self.remove_attachment()
         if self.assistant:
             self.assistant.reset()
         self.chat_log.clear()
@@ -2211,9 +2476,9 @@ class ClientPage:
         if self.assistant is None:
             self.assistant = Assistant(WS.settings)
         elif self.assistant.settings is not WS.settings:  # Settings dialog replaced the settings object
-            messages = self.assistant.messages
+            messages, attachment = self.assistant.messages, self.assistant.attachment
             self.assistant = Assistant(WS.settings)
-            self.assistant.messages = messages
+            self.assistant.messages, self.assistant.attachment = messages, attachment
         env = self.env()
         self.assistant.environment = env.name if env else None
         return self.assistant
@@ -2234,11 +2499,14 @@ class ClientPage:
             with ui.element("div").classes("rc-bot-msg"):
                 ui.markdown(text or "_(no answer)_")
             if sources:
-                with ui.row().classes("gap-1 items-center"):
-                    ui.label("Documents:").classes("text-xs text-grey-7")
-                    for i, s in enumerate(sources, 1):
-                        with ui.chip(f"[{i}] {s['source']}", icon="description").props("dense outline size=sm"):
-                            ui.tooltip(s["text"][:600]).classes("text-xs max-w-md whitespace-pre-wrap")
+                self.source_chips(sources)
+
+    def source_chips(self, sources: list[dict]) -> None:
+        with ui.row().classes("gap-1 items-center"):
+            ui.label("Documents:").classes("text-xs text-grey-7")
+            for i, s in enumerate(sources, 1):
+                with ui.chip(f"[{i}] {s['source']}", icon="description").props("dense outline size=sm"):
+                    ui.tooltip(s["text"][:600]).classes("text-xs max-w-md whitespace-pre-wrap")
 
     def add_tool_step(self, name: str, args: dict, result: str) -> None:
         brief = ", ".join(f"{k}={json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else v}"
@@ -2295,20 +2563,32 @@ class ClientPage:
         try:
             sources = await run.io_bound(a.begin_turn, text)
             answer = "I stopped after too many tool calls. Try a more specific question."
+            bubble = None
             for _ in range(MAX_TOOL_ROUNDS):
                 self.chat_status_label.text = f"Thinking ({WS.settings.ollama_chat_model})..."
-                msg = await run.io_bound(a.think)
+                bubble = StreamBubble(self)  # shows the answer as it is written
+                try:
+                    msg = await run.io_bound(a.think, bubble.push)
+                except BaseException:
+                    bubble.remove()
+                    bubble = None
+                    raise
                 if msg.get("notice"):
                     self.add_bot_message(msg["notice"], kind="notice")
                 if not msg.get("tool_calls"):
                     answer = msg["content"]
                     break
+                bubble.remove()  # it was a tool call, not an answer
+                bubble = None
                 for call in msg["tool_calls"]:
                     self.chat_status_label.text = f"Calling {call.get('function', {}).get('name', 'tool')}..."
                     name, args, result = await run.io_bound(a.call_tool, call)
                     self.add_tool_step(name, args, result)
                     self.chat_scroll_bottom()
-            self.add_bot_message(answer, sources)
+            if bubble is not None:
+                bubble.finish(strip_thinking(answer), sources)
+            else:
+                self.add_bot_message(answer, sources)
         except OllamaError as e:
             self.add_bot_message(str(e), kind="error")
         except Exception as e:  # keep the chat usable whatever happens
@@ -2388,6 +2668,9 @@ class ClientPage:
                     "- **Ctrl+S** saves, **Ctrl+Enter** sends (**⌘S** / **⌘Enter** on a Mac).\n"
                     "- **All pages** pulls every page of a OneRoster list.\n"
                     "- **Bulk Runner**: pick requests, load a CSV, preview, run, download results.\n"
+                    "- **Recent** (next to New) re-runs your last lookups. **Copy for ticket** (on the response) "
+                    "copies a summary with keys hidden.\n"
+                    "- **Test connection** on the Environments tab checks a district's keys.\n"
                     f"- Your files live in `{app_home()}`.")
                 with ui.row():
                     ui.button("Open data folder", icon="folder_open",
@@ -2434,20 +2717,125 @@ class ClientPage:
                       value=s.use_system_certificates, on_change=lambda e: setattr(s, "use_system_certificates", e.value))
             ui.switch("Verify SSL certificates (only turn off for testing)", value=s.verify_ssl,
                       on_change=lambda e: setattr(s, "verify_ssl", e.value))
+            keychain = ui.switch(f"Keep keys and secrets in the {secret_store.store_name()} (recommended)",
+                                 value=s.use_keychain, on_change=lambda e: setattr(s, "use_keychain", e.value))
+            if not secret_store.available():
+                keychain.disable()
+                ui.label("No password store is available on this computer, so secrets stay in the environment "
+                         "files.").classes("text-xs text-grey-7")
+            ui.separator()
+            with ui.row().classes("w-full items-center gap-2"):
+                ui.label(f"Version {__version__}").classes("text-sm")
+                ui.button("Check for updates", icon="system_update",
+                          on_click=lambda: self.check_updates(quiet=False)).props("flat dense no-caps")
             with ui.row().classes("w-full justify-end"):
                 ui.button("Cancel", on_click=lambda: d.submit(False)).props("flat no-caps")
                 ui.button("Save", on_click=lambda: d.submit(True)).props("no-caps")
         ok = await d
         d.delete()
         if ok:
+            keychain_changed = s.use_keychain != WS.settings.use_keychain
             save_settings(s)
             WS.settings = s
             WS.reload()
+            if keychain_changed:  # move every environment's secrets into (or out of) the password store
+                for env in WS.environments:
+                    WS.save_environment(env)
+                where = secret_store.store_name() if s.use_keychain else "the environment files"
+                ui.notify(f"Secrets are now kept in {where}", type="positive")
             self.render_tree.refresh()
             self.refresh_env_options()
             self.refresh_collection_options()
             self.render_env_list.refresh()
             ui.notify("Settings saved", type="positive")
+
+    # ================================================================= updates
+    async def check_updates(self, quiet: bool = False) -> None:
+        if not quiet:
+            note = ui.notification("Checking for updates...", spinner=True, timeout=None)
+        try:
+            status = await run.io_bound(updater.check)
+        except updater.UpdateError as exc:
+            status = updater.UpdateStatus(kind="none", message=str(exc))
+        finally:
+            if not quiet:
+                note.dismiss()
+        self.update_status = status
+        save_ui_state(update_checked=time.time())
+        self.update_btn.set_visibility(status.available)
+        if not quiet:
+            self.show_update_dialog(status)
+
+    def show_update_dialog(self, status: updater.UpdateStatus | None) -> None:
+        if status is None:
+            return
+        with self.dialog_host, ui.dialog() as d, ui.card().classes("w-[560px] max-w-full"):
+            ui.label("Updates").classes("text-lg font-medium")
+            body = ui.column().classes("w-full gap-2")
+            with body:
+                ui.label(status.message).classes("text-sm")
+                if status.changes:
+                    ui.label("What's new:").classes("text-sm font-medium")
+                    ui.markdown("\n".join(f"- {c}" for c in status.changes)).classes("text-sm")
+            with ui.row().classes("w-full justify-end gap-2") as buttons:
+                ui.button("Close", on_click=d.close).props("flat no-caps")
+                if status.available and status.kind == "git" and status.can_apply:
+                    ui.button("Update now", icon="system_update",
+                              on_click=lambda: self.apply_update(d, body, buttons)).props("no-caps unelevated")
+                elif status.available and status.kind == "release":
+                    ui.button("Download", icon="open_in_new",
+                              on_click=lambda: ui.navigate.to(status.url, new_tab=True)).props("no-caps unelevated")
+        d.on("hide", d.delete)
+        d.open()
+
+    async def apply_update(self, dialog, body, buttons) -> None:
+        if self.running or self.chat_busy:
+            ui.notify("Wait for the bulk run / assistant answer to finish first.", type="warning")
+            return
+        if self.dirty and not await self.confirm("Unsaved changes", "The open request has unsaved changes. Save "
+                                                 "them first, or continue and lose them when the app restarts.",
+                                                 "Continue", "negative"):
+            return
+        buttons.clear()
+        body.clear()
+        with body, ui.row().classes("items-center gap-2"):
+            ui.spinner(size="sm")
+            ui.label("Downloading the update...").classes("text-sm")
+        try:
+            message = await run.io_bound(updater.apply)
+        except updater.UpdateError as exc:
+            body.clear()
+            with body:
+                ui.label(str(exc)).classes("text-sm text-red-8")
+            with buttons:
+                ui.button("Close", on_click=dialog.close) \
+                    .props("flat no-caps")
+            return
+        self.update_btn.set_visibility(False)
+        body.clear()
+        with body:
+            ui.label(f"{message} Restart the app to use the new version.").classes("text-sm text-green-8")
+        with buttons:
+            ui.button("Restart now", icon="restart_alt", on_click=self.restart_app).props("no-caps unelevated")
+
+    def restart_app(self) -> None:
+        try:
+            updater.spawn_restart(PORT)
+        except OSError as exc:
+            ui.notify(f"Couldn't restart: {exc}. Close the app and open it again.", type="negative")
+            return
+        ui.notify("Restarting... this page reloads by itself in a few seconds.", spinner=True, timeout=None)
+        # reload once the new copy answers (it reports a different start time than this one)
+        ui.run_javascript(f"""
+            const old = {json.dumps(STARTED)};
+            const t = setInterval(async () => {{
+                try {{
+                    const r = await fetch('/healthz', {{cache: 'no-store'}});
+                    if (r.ok && (await r.json()).started !== old) {{ clearInterval(t); location.reload(); }}
+                }} catch (e) {{}}
+            }}, 1000);
+        """)
+        ui.timer(0.8, app.shutdown, once=True)
 
     async def quit_app(self) -> None:
         if self.dirty and not await self.confirm("Quit?", "The open request has unsaved changes.", "Quit anyway",
@@ -2463,12 +2851,13 @@ class ClientPage:
 
 # ====================================================================== startup ======
 def start(port: int, show: bool = True) -> None:
-    global WS
+    global WS, PORT
+    PORT = port
     WS = Workspace()
 
     @app.get("/healthz")
     def healthz():
-        return {"app": "schoology-api-client", "version": __version__}
+        return {"app": "schoology-api-client", "version": __version__, "started": STARTED}
 
     @ui.page("/")
     def index():

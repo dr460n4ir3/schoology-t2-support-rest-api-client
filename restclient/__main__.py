@@ -38,6 +38,9 @@ def main() -> None:
         sys.stderr = sys.stderr or stream
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
                         handlers=[logging.FileHandler(log_file, encoding="utf-8")])
+    from restclient.redact import install_log_filter
+
+    install_log_filter()  # keys, secrets and tokens never reach the log file
 
     show = "--no-browser" not in sys.argv
     port = settings.port

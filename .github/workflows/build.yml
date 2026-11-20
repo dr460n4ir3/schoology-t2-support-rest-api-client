@@ -1,0 +1,78 @@
+# Builds the stand-alone app (no Python needed) for Windows and both kinds of Mac.
+#
+#  * Every push to main: runs the tests.
+#  * Push a version tag (e.g. v1.1.0) or click "Run workflow" on the Actions tab: also builds
+#      - Schoology-API-Client-Windows.zip      (unzip, double-click "Schoology API Client.exe")
+#      - Schoology-API-Client-Mac-Intel.zip     (2019-2020 Intel Macs)
+#      - Schoology-API-Client-Mac-AppleChip.zip (M1/M2/M3/M4 Macs)
+#    A tag also publishes them as a GitHub Release, which the app's "Check for updates" links to.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed to publish the release
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+
+  build:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+          - os: macos-15-intel
+            name: Mac-Intel
+          - os: macos-15
+            name: Mac-AppleChip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pyinstaller
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          nicegui-pack --onedir --windowed --noconfirm --clean --name "Schoology API Client" --add-data "examples;examples" run_app.py
+          Compress-Archive -Path "dist/Schoology API Client" -DestinationPath "Schoology-API-Client-${{ matrix.name }}.zip"
+      - name: Build (Mac)
+        if: runner.os == 'macOS'
+        run: |
+          nicegui-pack --onedir --windowed --noconfirm --clean --name "Schoology API Client" --add-data "examples:examples" run_app.py
+          ditto -c -k --keepParent "dist/Schoology API Client.app" "Schoology-API-Client-${{ matrix.name }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Schoology-API-Client-${{ matrix.name }}
+          path: Schoology-API-Client-${{ matrix.name }}.zip
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: Schoology-API-Client-*.zip
+          generate_release_notes: true

@@ -37,6 +37,7 @@ class Settings:
     verify_ssl: bool = True
     use_system_certificates: bool = True
     port: int = 8765
+    use_keychain: bool = True  # keep secret values in the Mac Keychain / Windows Credential Manager
     # AI / MCP safety switches
     mcp_allow_write_methods: bool = False  # allow POST/PUT/PATCH/DELETE from the AI
     mcp_allow_adhoc_requests: bool = False  # allow the AI to call URLs that are not saved in a collection

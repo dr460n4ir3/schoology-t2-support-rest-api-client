@@ -9,3 +9,11 @@ dist/
 # Never commit real credentials: environments live in the user's app folder
 # (~/SchoologyAPIClient), not in the repo. Only the examples/ placeholders are tracked.
 *.env.json
+# Things the app saves for one person (normally in ~/SchoologyAPIClient, outside the repo).
+# Listed here too so they can never be committed, even if someone points the app folder at the repo.
+/recent_lookups.json
+/settings.json
+/ui_state.json
+/results/
+/logs/
+/knowledge/

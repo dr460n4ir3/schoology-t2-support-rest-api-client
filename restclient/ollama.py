@@ -62,15 +62,44 @@ class Ollama:
 
     # -------------------------------------------------------------------- chat
     def chat(self, model: str, messages: list[dict], tools: list[dict] | None = None,
-             num_ctx: int | None = None, temperature: float = 0.2) -> dict:
-        """One (non-streaming) chat call. Returns the assistant message dict."""
-        payload: dict = {"model": model, "messages": messages, "stream": False, "keep_alive": KEEP_ALIVE,
+             num_ctx: int | None = None, temperature: float = 0.2,
+             on_token: Callable[[str], None] | None = None) -> dict:
+        """One chat call. Returns the assistant message dict.
+
+        With on_token, the answer is streamed: on_token(text) is called with each new piece as the model
+        writes it, so the screen can show the answer growing instead of waiting for all of it.
+        """
+        payload: dict = {"model": model, "messages": messages, "stream": bool(on_token), "keep_alive": KEEP_ALIVE,
                          "options": {"temperature": temperature}}
         if num_ctx:
             payload["options"]["num_ctx"] = num_ctx
         if tools:
             payload["tools"] = tools
-        return self._post("/api/chat", payload).get("message", {})
+        if not on_token:
+            return self._post("/api/chat", payload).get("message", {})
+        content, calls = [], []
+        try:
+            with requests.post(self.base + "/api/chat", json=payload, stream=True, timeout=self.timeout) as r:
+                self._raise(r)
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    if data.get("error"):
+                        raise OllamaError(f"Ollama error: {data['error']}")
+                    msg = data.get("message") or {}
+                    if msg.get("content"):
+                        content.append(msg["content"])
+                        on_token(msg["content"])
+                    calls += msg.get("tool_calls") or []
+                    if data.get("done"):
+                        break
+        except requests.RequestException as e:
+            raise OllamaError(f"Could not reach Ollama at {self.base}. Is it installed and running? ({e})") from e
+        out: dict = {"role": "assistant", "content": "".join(content)}
+        if calls:
+            out["tool_calls"] = calls
+        return out
 
     def embed(self, model: str, texts: list[str], batch: int = 32) -> list[list[float]]:
         out: list[list[float]] = []

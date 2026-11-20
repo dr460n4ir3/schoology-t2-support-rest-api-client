@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from mcp.server.mcpserver import MCPServer
 
-from . import engine, runner
+from . import engine, redact, runner
 from .models import KV, Folder, Request
 from .variables import request_variables
 from .workspace import Workspace
@@ -48,7 +48,7 @@ def _check_method(ws: Workspace, method: str) -> str | None:
 
 def _result_dict(ws: Workspace, rr: engine.ResolvedRequest, res: engine.Result) -> dict:
     limit = ws.settings.mcp_max_response_chars
-    body = res.pretty_body()
+    body = redact.redact(res.pretty_body(), rr.auth.secret_values())  # e.g. a token endpoint's access_token
     truncated = len(body) > limit
     keep_headers = {k: v for k, v in res.headers.items()
                     if k.lower() in ("content-type", "x-total-count", "link", "location", "retry-after",
@@ -57,7 +57,7 @@ def _result_dict(ws: Workspace, rr: engine.ResolvedRequest, res: engine.Result) 
         "request": rr.describe(mask_secrets=True),
         "status": res.status,
         "reason": res.reason,
-        "error": res.error,
+        "error": redact.redact(res.error, rr.auth.secret_values()),
         "elapsed_ms": res.elapsed_ms,
         "note": res.note,
         "headers": keep_headers,

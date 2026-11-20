@@ -19,8 +19,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from . import redact
 from .config import Settings
-from .engine import execute, mask, new_session
+from .engine import execute, new_session
 from .models import Collection, Environment, Request
 
 
@@ -199,10 +200,13 @@ def run(collection: Collection, requests_to_run: list[Request], environment: Env
             error = res.error or ("" if passed else f"Expected {options.expected_status or 'success'}, got {res.status}")
             if not passed and res.text and not res.error:
                 error += f": {res.text[:200]}"
+            # results are shown, downloaded and saved to a CSV: never let a key, secret or token into them
+            hide = secrets + rr.auth.secret_values()
             step = StepResult(
-                row=row_no, request=req.name, method=rr.method, url=_mask_url(res.url or rr.url, secrets),
-                status=res.status, passed=passed, elapsed_ms=res.elapsed_ms, error=error,
-                extracted=extracted, inputs=row, response=res.text[:2000],
+                row=row_no, request=req.name, method=rr.method, url=redact.redact(res.url or rr.url, hide),
+                status=res.status, passed=passed, elapsed_ms=res.elapsed_ms, error=redact.redact(error, hide),
+                extracted={k: redact.redact(v, hide) for k, v in extracted.items()}, inputs=row,
+                response=redact.redact(res.text[:2000], hide),
             )
             results.append(step)
             if on_result:
@@ -214,13 +218,6 @@ def run(collection: Collection, requests_to_run: list[Request], environment: Env
                     stop = True
                 break  # later requests in this row usually depend on this one
     return results
-
-
-def _mask_url(url: str, secrets: list[str]) -> str:
-    for s in secrets:
-        if s and len(s) > 3:
-            url = url.replace(s, mask(s, 3))
-    return url
 
 
 def results_to_csv(results: list[StepResult]) -> str:

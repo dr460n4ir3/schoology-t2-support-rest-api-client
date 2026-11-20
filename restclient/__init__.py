@@ -1,6 +1,6 @@
 """Schoology T2 Support REST API client - a lightweight Postman replacement."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 APP_NAME = "Schoology API Client"
 
 

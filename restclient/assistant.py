@@ -38,19 +38,29 @@ APP_GUIDE = """- Pick the district/SIS in the Environment box (top right). Each 
 - Send one request: click a saved request in the Collections list (left), fill in ids such as user_id
   (orange warnings list what's missing), press Send (Ctrl+Enter / Cmd+Enter). Ctrl+S / Cmd+S saves.
   "All pages" fetches every page of a OneRoster list. The ... menu has Preview and Copy as cURL.
+  A failed call shows a one-line tip under the response saying what the status code means.
+- Recent (clock icon next to New): the last lookups, with the ids used; click one to run it again. They are
+  kept only on this computer.
+- Copy for ticket (button on the response): copies the request, environment, status, meaning and key
+  fields, with keys and secrets hidden, ready to paste into a ticket.
 - Bulk Runner tab (many ids at once): pick the request(s), load a CSV whose column names match the request's
   variables (e.g. a user_id column), click "Preview first row", then Run. Results save automatically and
   can be downloaded as CSV; click a row to see its full response. Requests that change data ask to
   confirm first; try 1-2 rows first.
+- Environments tab: "Test connection" sends one harmless request to check a district's keys work (green =
+  OK); "Test all" checks every environment. Keys and secrets are stored in the Mac Keychain / Windows
+  Credential Manager, not in the files.
 - Collections: + creates one, the upload button imports Postman collections/environments, refresh reloads
   files changed by teammates. Right-click style "..." menus rename, duplicate or delete.
 - Database tab: Sign in runs the team's sign-in commands (set under Setup), then click a database to open it
-  in the database app (e.g. Sequel Ace).
+  in the database app (e.g. Sequel Ace). To ask the AI about a query result: export it from the database
+  app as CSV, then click the paperclip in the Assistant tab and attach it (it stays on this computer).
 - Assistant tab (this chat): add runbooks/KB articles under Knowledge base so answers can cite them.
   Start/Stop turns the local AI on and off; Stop frees memory.
 - AI & Help tab: safety switches (the AI is read-only unless "Allow AI to change data" is on) and
   "Set up Copilot for me" for VS Code.
-- Settings (gear icon): folders (e.g. collections on a shared drive), timeout, certificate options.
+- Settings (gear icon): folders (e.g. collections on a shared drive), timeout, certificate options,
+  keychain on/off, and "Check for updates" (updates the app from GitHub and restarts it).
   Dark/light mode: moon/sun icon. The power icon closes the app.
 """
 
@@ -67,6 +77,8 @@ Decide first which kind of question it is:
   search_knowledge_base once.
 - Which collections, requests or environments exist: answer from the lists at the end, naming ALL
   collections and ALL environments. Do not call tools.
+- Questions about ATTACHED DATA (a file the user attached, e.g. a database query export): answer from that
+  data. Count and quote rows exactly. Do not call tools unless the user asks to look something up in the API.
 - Live data about a specific user, section, course, school, enrollment, class or org (usually an id or name
   is given): call send_saved_request with the saved request whose name AND needed ids fit, e.g. for
   "sections of user 12345" use the request that needs user_id and mentions sections. Pass ids in
@@ -277,10 +289,12 @@ class Assistant:
         self._turn_start = 0
         self.use_tools = True  # decided per question by needs_tools()
         self._question = ""
+        self.attachment: tuple[str, str] | None = None  # (file name, text): included with every question
 
     # ---------------------------------------------------------------- set-up
     def reset(self) -> None:
         self.messages = []
+        self.attachment = None
 
     def tools(self) -> list[dict]:
         specs = tool_specs()
@@ -318,6 +332,10 @@ class Assistant:
         except OllamaError:
             sources = []  # no embedding model / KB: the assistant still works for API questions
         content = question
+        if self.attachment:
+            name, text = self.attachment
+            content += (f"\n\n---\nATTACHED DATA from the file '{name}' (the user's own export; answer from it):"
+                        f"\n{text}")
         if sources:
             excerpts = "\n\n".join(f"[{i}] (from {s['source']})\n{s['text']}" for i, s in enumerate(sources, 1))
             content = (f"{question}\n\n---\nPossibly relevant excerpts from the team's documents "
@@ -326,17 +344,20 @@ class Assistant:
         self.messages.append({"role": "user", "content": content})
         return sources
 
-    def think(self) -> dict:
-        """Ask the model for its next step. Returns the assistant message (content and/or tool_calls)."""
+    def think(self, on_token: Callable[[str], None] | None = None) -> dict:
+        """Ask the model for its next step. Returns the assistant message (content and/or tool_calls).
+        on_token(text) receives the answer piece by piece as it is written (for showing it live)."""
         msgs = [{"role": "system", "content": self.system_prompt()}] + self.messages
         tools = self.tools() if self.tools_supported and self.use_tools else None
+        stream = {"on_token": on_token} if on_token else {}
         try:
             msg = self.client.chat(self.settings.ollama_chat_model, msgs, tools=tools,
-                                   num_ctx=self.settings.ollama_num_ctx)
+                                   num_ctx=self.settings.ollama_num_ctx, **stream)
         except OllamaError as e:
             if tools and "does not support tools" in str(e):
                 self.tools_supported = False
-                msg = self.client.chat(self.settings.ollama_chat_model, msgs, num_ctx=self.settings.ollama_num_ctx)
+                msg = self.client.chat(self.settings.ollama_chat_model, msgs, num_ctx=self.settings.ollama_num_ctx,
+                                       **stream)
                 msg["notice"] = (f"'{self.settings.ollama_chat_model}' can't call tools, so it can only answer from "
                                  "documents. Pick a model such as qwen2.5:3b or llama3.1:8b to let it call the API.")
             else:

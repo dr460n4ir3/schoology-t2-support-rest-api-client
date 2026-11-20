@@ -217,8 +217,9 @@ def test_json_body_and_curl(server):
     data = res.json()
     assert data["body"] == '{"x": "42"}' and data["content_type"] == "application/json"
     assert data["auth"] == "Bearer abc"
-    curl = engine.to_curl(rr, SETTINGS)
-    assert curl.startswith("curl -X POST") and "Bearer abc" in curl
+    curl = engine.to_curl(rr, SETTINGS)  # credentials hidden by default
+    assert curl.startswith("curl -X POST") and "Bearer abc" not in curl and "Bearer [hidden]" in curl
+    assert "Bearer abc" in engine.to_curl(rr, SETTINGS, include_credentials=True)
 
 
 def test_bulk_runner_csv_extract_and_429_retry(server):

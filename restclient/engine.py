@@ -19,7 +19,7 @@ from requests.auth import HTTPBasicAuth
 from requests.structures import CaseInsensitiveDict
 from requests_oauthlib import OAuth1
 
-from . import __version__
+from . import __version__, redact
 from .config import Settings
 from .models import Auth, Collection, Environment, Request
 from .variables import VAR_RE, build_scope, effective_auth, substitute
@@ -96,6 +96,7 @@ def resolve(request: Request, collection: Collection | None = None, environment:
     # Credentials never contain leading/trailing spaces, but copy-pasted keys often do (-> 401)
     auth_data = {k: (s(v).strip() if k != "type" else v) for k, v in auth.to_dict().items()}
     resolved_auth = Auth.from_dict(auth_data, auth.type)
+    redact.register(*resolved_auth.secret_values())
 
     def pairs(items):
         return [(s(kv.key), s(kv.value)) for kv in items if kv.enabled and kv.key.strip()]
@@ -159,6 +160,7 @@ def get_oauth2_token(a: Auth, settings: Settings, session: requests.Session, for
             raise AuthError(f"OAuth 2.0 token response had no access_token: {resp.text[:500]}") from exc
         expires_in = float(payload.get("expires_in") or 3600)
         _token_cache[key] = (token, time.time() + max(expires_in - 60, 30))
+        redact.register(token)
         return token
 
 
@@ -423,7 +425,8 @@ def execute(request: Request, collection: Collection | None, environment: Enviro
 # --------------------------------------------------------------------------------------
 # cURL export (handy for handing a reproducible call to engineering / a vendor)
 # --------------------------------------------------------------------------------------
-def to_curl(rr: ResolvedRequest, settings: Settings) -> str:
+def to_curl(rr: ResolvedRequest, settings: Settings, include_credentials: bool = False) -> str:
+    """The request as a curl command. Credentials are hidden unless include_credentials is True."""
     prep = prepare(rr, settings, new_session())
     parts = ["curl", "-X", prep.method or rr.method, shlex.quote(prep.url or rr.url)]
     for k, v in prep.headers.items():
@@ -439,4 +442,5 @@ def to_curl(rr: ResolvedRequest, settings: Settings) -> str:
         parts += ["--data-raw", shlex.quote(body)]
     if not settings.verify_ssl:
         parts.append("-k")
-    return " ".join(parts)
+    text = " ".join(parts)
+    return text if include_credentials else redact.redact(text, rr.auth.secret_values())

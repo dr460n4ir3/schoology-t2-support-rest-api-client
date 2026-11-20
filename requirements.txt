@@ -4,4 +4,5 @@ requests-oauthlib>=2.0,<3
 truststore>=0.10
 mcp>=2.3,<3
 pypdf>=5.0
+keyring>=25
 pytest>=8

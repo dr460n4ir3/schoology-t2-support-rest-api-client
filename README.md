@@ -30,11 +30,18 @@ A lightweight Postman replacement for the PS SYG Support team. Written in Python
      and click **Open Anyway** (enter your Mac password), then **Open Anyway** again. You only do this
      once. A Terminal window appears; you can close it once the browser opens.
 2. **Pick an environment** at the top right (the district / SIS you are working on).
-   Edit it on the **Environments** tab: paste the API keys and fill in IDs.
+   Edit it on the **Environments** tab: paste the API keys and fill in IDs. Click **Test connection** to check
+   the keys work (the signal icon above the list tests every environment at once). Keys and secrets are kept in
+   the Mac Keychain / Windows Credential Manager, not in the environment files.
 3. Click a request on the left, then press **Send** (or **Ctrl+Enter** / **⌘Enter**). **Ctrl+S** / **⌘S** saves.
    - `{{user_id}}` is a *variable*. An orange warning tells you which ones still need a value.
    - **All pages** fetches every page of a OneRoster list.
-   - The **⋮** menu has *Preview* (see exactly what will be sent) and *Copy as cURL*.
+   - The **⋮** menu has *Preview* (see exactly what will be sent) and *Copy as cURL* (keys hidden).
+   - If a call fails, a 💡 line under the response says what the status code means and what to try.
+   - **Copy for ticket** (on the response) copies the request, environment, status, meaning and key fields,
+     with keys and secrets hidden, ready to paste into a ticket.
+   - **Recent** (next to New) lists your last 10 lookups with the ids used; click one to run it again.
+     Recent lookups are saved only on your computer (in your app folder), never in the repo.
 4. **Bulk Runner** tab: pick the request(s), drop in a CSV whose column names match the variables
    (e.g. a `user_id` column), click **Preview first row**, then **Run**. Results are saved
    automatically. Click any row to see the full response.
@@ -43,13 +50,20 @@ A lightweight Postman replacement for the PS SYG Support team. Written in Python
    *"Look up Schoology user 12345 and list their sections"* or *"What do our docs say about SYG-ROSTER-409?"*.
    It searches documents you add (PDF/Word/text) and calls the API with your saved requests.
    First time: double-click **`Install Local AI (optional).bat`** (Mac: **`.command`**). It downloads
-   about 2–5 GB, so run it on a good connection.
+   about 2–5 GB, so run it on a good connection. Answers appear as they are written.
+   - To ask about a **database query result**: export it as CSV (Sequel Ace: **File → Export → CSV**), click
+     the 📎 next to the chat box and pick the file. It's read into memory only and never leaves your computer.
+     The app counts blanks and values for the AI, so "how many…" questions get exact numbers. Small models do
+     best with one question at a time.
 6. **Database** tab (optional): one-click sign-in and a list of your database connection files.
    Under **Setup**, type the commands you normally run in Terminal to sign in (one per line), the folder
    they run in, and the folder where the sign-in puts one connection file per database. Then click
    **Sign in** (a browser window may open to sign in) and click a database to open it in your
    database app (e.g. Sequel Ace). These settings stay on your computer.
-7. Close the browser tab when you're done. The ⏻ button (top right) fully stops the app.
+7. **Updates**: when a new version is on GitHub, a green **Update available** button appears at the top.
+   Click it, then **Update now** and **Restart now**. You can also check under **Settings (⚙) → Check for
+   updates**.
+8. Close the browser tab when you're done. The ⏻ button (top right) fully stops the app.
 
 Your files are in `C:\Users\<you>\SchoologyAPIClient` on Windows or `/Users/<you>/SchoologyAPIClient` on
 a Mac (collections, environments, results, logs).
@@ -93,10 +107,23 @@ After a `git pull`, the launcher re-installs components only if `requirements.tx
 Rebuild and re-share when you change the code.
 (The AI/MCP connection needs the Python route.)
 
+**Built by GitHub (recommended)**: `.github/workflows/build.yml` builds all three versions on GitHub's
+machines: Windows, Intel Mac and Apple-chip Mac. To publish a version:
+1. Bump `__version__` in `restclient/__init__.py` and commit.
+2. Tag it and push the tag: `git tag v1.1.0` then `git push origin v1.1.0`.
+3. In a few minutes the zips appear under the repo's **Releases**.
+
+Team members download the zip for their computer, unzip it and open the app. The stand-alone app's
+**Check for updates** compares its version with the latest release and links to the download. Every push
+to `main` also runs the tests there. **Actions → Build → Run workflow** builds without publishing (the zips
+appear under that run's *Artifacts*).
+
 ### Sharing collections across the team
 **Settings (⚙) → Collections folder**: point everyone at the same shared folder (OneDrive/SharePoint/network
 drive) so the team uses one set of collections. Use the ↻ button in the sidebar to pick up teammates' changes.
-Keep **Environments** local, because they hold each person's credentials. Deleted items are copied to a
+Keep **Environments** local: the secrets themselves live in each person's Keychain / Credential Manager, so
+an environment file copied to another computer arrives without its secrets (the app says so, and you type them
+in again). Deleted items are copied to a
 `.trash` folder first.
 
 You can also set `RESTCLIENT_HOME` to move the whole data folder.
@@ -186,10 +213,25 @@ knowledge of any company tool, and nothing about one belongs in this repo.
   The app never reads the connection files, so it never sees database passwords.
 - Output is kept in memory only (not logged), since sign-in tools can print sensitive details.
 
+### Keys, secrets and privacy
+- **Keychain**: values marked secret (🔒 on the Environments tab) and auth secrets (consumer/client secret,
+  password, token) are stored in the Mac Keychain (entries named *Schoology API Client* in Keychain Access) or
+  Windows Credential Manager. The environment file only says `"keychain": true`. Older files with plain-text
+  secrets are moved automatically the first time the app loads them. Turn it off with `use_keychain` in
+  Settings (the secrets then move back into the files). Without a password store (some Linux setups) the app
+  keeps using the files.
+- **Hidden everywhere text leaves the window**: keys, secrets and tokens are replaced with `[hidden]` in Bulk
+  Runner results and their CSV files, copied/downloaded responses, *Copy as cURL*, *Copy for ticket*, the log
+  file and everything the AI sees (`restclient/redact.py`). The screen itself still shows the real response.
+  *Copy as cURL with keys* is the only exception, for your own use.
+- **Recent lookups** are stored in `~/SchoologyAPIClient/recent_lookups.json`. Base URLs and credentials are
+  kept as `{{variables}}` there, so the file holds only the ids you looked up. `.gitignore` also lists it,
+  so it can't be committed.
+
 ### Settings (`~/SchoologyAPIClient/settings.json`)
 `collections_dir`, `environments_dir`, `results_dir`, `timeout_seconds`, `verify_ssl`,
 `use_system_certificates` (uses the Windows certificate store / macOS Keychain via `truststore`; needed
-behind corporate SSL inspection), `port` (default 8765), plus the MCP switches, Ollama and Database tab
+behind corporate SSL inspection), `port` (default 8765), `use_keychain` (default on), plus the MCP switches, Ollama and Database tab
 settings above (`db_*`, blank by default).
 
 ### Project layout
@@ -208,6 +250,10 @@ restclient/
   storage.py, workspace.py  load/save files
   postman.py              Postman import/export
   launcher.py             Database tab: run sign-in commands, list/open connection files
+  secret_store.py         keys/secrets in the Mac Keychain / Windows Credential Manager
+  redact.py               hides keys, secrets and tokens in anything copied, saved, logged or sent to the AI
+  support.py              error tips, copy for ticket, connection test, recent lookups, data attachments
+  updater.py              "Check for updates" (git pull, or GitHub Releases for the stand-alone app)
   copilot_setup.py        writes the Copilot global MCP file (AI & Help tab button)
   ui.py                   NiceGUI interface
   mcp_server.py           AI tools (MCP)
@@ -216,6 +262,8 @@ examples/                 starter collections, example environments, sample CSVs
 tests/test_core.py        tests against a local mock API (OAuth1/2, paging, runner, Postman)
 tests/test_assistant.py   local AI assistant + knowledge base (fake Ollama)
 tests/test_launcher.py    Database tab command runner and connection list
+tests/test_support.py     keychain, redaction, tips, ticket text, connection test, recent, updates, streaming
+.github/workflows/build.yml  tests on every push; Windows + Mac builds and a Release for each v* tag
 ```
 
 ### Tests
