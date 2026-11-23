@@ -294,9 +294,35 @@ def test_release_check_compares_versions(monkeypatch):
         def json():
             return {"tag_name": "v99.0.0", "html_url": "https://example.test/r", "body": "- Faster\n- Safer"}
 
-    monkeypatch.setattr(requests, "get", lambda *a, **k: R())
+    calls = []
+    monkeypatch.setattr(requests, "get", lambda url, **k: calls.append(url) or R())
+    monkeypatch.setattr(updater, "repo_info", lambda: updater.parse_remote("https://github.com/acme/tool.git"))
     status = updater._check_release()
     assert status.available and status.latest == "99.0.0" and status.changes == ["Faster", "Safer"]
+    assert calls == ["https://api.github.com/repos/acme/tool/releases/latest"]
+
+
+def test_repo_address_comes_from_where_it_was_cloned(tmp_path, monkeypatch):
+    p = updater.parse_remote
+    assert p("git@github.com:acme/tool.git").web == "https://github.com/acme/tool"
+    tokened = p("https://me:ghp_secret123@github.com/acme/tool.git")
+    assert "secret" not in tokened.web + tokened.api
+    assert p("https://github.acme.test/team/tool").api == "https://github.acme.test/api/v3/repos/team/tool"
+    assert p("not a url") is None
+
+    _git("init", "-q", str(tmp_path), cwd=tmp_path)
+    _git("remote", "add", "origin", "https://me:tok@github.com/work-org/api-client.git", cwd=tmp_path)
+    assert updater.stamp(tmp_path) == "https://github.com/work-org/api-client"  # what a build carries
+    assert (tmp_path / updater.STAMP_FILE).read_text().strip() == "https://github.com/work-org/api-client"
+    monkeypatch.setattr(updater, "source_folder", lambda: tmp_path)
+    assert updater.repo_info().releases_url == "https://github.com/work-org/api-client/releases/latest"
+
+    monkeypatch.setattr(updater, "source_folder", lambda: None)  # stand-alone build: reads the stamp
+    monkeypatch.setattr(updater, "resource_dir", lambda: tmp_path)
+    assert updater.repo_info().web == "https://github.com/work-org/api-client"
+    (tmp_path / updater.STAMP_FILE).write_text("")
+    status = updater._check_release()
+    assert status.kind == "none" and "Ask the app admin" in status.message
 
 
 # ------------------------------------------------------------------ streaming ---

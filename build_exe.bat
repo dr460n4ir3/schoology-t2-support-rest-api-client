@@ -15,10 +15,13 @@ if not exist ".venv\Scripts\python.exe" (
 if not %errorlevel%==0 goto failed
 rem nicegui-pack calls "pyinstaller" by name, so put the venv's tools first on PATH
 set "PATH=%~dp0.venv\Scripts;%PATH%"
+rem remember which GitHub repo this build came from (for its "Check for updates")
+".venv\Scripts\python.exe" -m restclient.updater stamp
 ".venv\Scripts\nicegui-pack.exe" --onedir --windowed --noconfirm --clean ^
     --name "Schoology API Client" ^
     --add-data "examples;examples" ^
     --add-data "collections;collections" ^
+    --add-data "build_repo.txt;." ^
     run_app.py
 if not %errorlevel%==0 goto failed
 echo.

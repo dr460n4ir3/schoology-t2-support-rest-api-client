@@ -17,3 +17,5 @@ dist/
 /results/
 /logs/
 /knowledge/
+# written by the build scripts (the repo address the stand-alone app checks for updates)
+/build_repo.txt

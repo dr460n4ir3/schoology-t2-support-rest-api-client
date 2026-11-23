@@ -89,8 +89,9 @@ too old. The launcher looks for 3.10+ and says so if it can't find it.
 
 ### Install / update on a team PC (Python route)
 ```bat
-git clone https://github.com/dr460n4ir3/schoology-t2-support-rest-api-client.git
+git clone https://github.com/<owner>/<repo>.git
 ```
+(Use the address from the repo's green **Code** button on GitHub, or clone it with GitHub Desktop.)
 Then double-click `Launch API Client.bat` (Mac: `Launch API Client.command`), and optionally
 `Create Desktop Shortcut.bat` (Mac: `Create Desktop Shortcut.command`). The `.command` files are committed
 as executable; if a Mac says they aren't, run `chmod +x *.command` once in the repo folder.
@@ -172,7 +173,7 @@ app skips that one file and says which one.
    in the app folder, type `git push`, and sign in once in the window that appears (or sign in to GitHub
    Desktop). Then they click **Share** again.
 
-**This repo is public**: anyone can read the request files. They never contain keys: the app blocks
+**If the repo is public**, anyone can read the request files. They never contain keys: the app blocks
 sharing a request with a real key, token or password in it. Still, don't put district names, student ids or
 notes about real people in requests or descriptions. Ids belong in environments and CSVs (which stay on
 each computer). If that's too limiting, make the repository private (repo Settings → General → Danger

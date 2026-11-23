@@ -13,10 +13,13 @@ fail() { echo; echo "Build failed - see the messages above."; read -r -p "Press 
 .venv/bin/python -m pip install --disable-pip-version-check -q -r requirements.txt pyinstaller || fail
 # nicegui-pack calls "pyinstaller" by name, so put the venv's tools first on PATH
 export PATH="$(pwd)/.venv/bin:$PATH"
+# remember which GitHub repo this build came from (for its "Check for updates")
+.venv/bin/python -m restclient.updater stamp || fail
 .venv/bin/nicegui-pack --onedir --windowed --noconfirm --clean \
     --name "Schoology API Client" \
     --add-data "examples:examples" \
     --add-data "collections:collections" \
+    --add-data "build_repo.txt:." \
     run_app.py || fail
 echo
 echo 'Done. Zip and share:  dist/Schoology API Client.app'

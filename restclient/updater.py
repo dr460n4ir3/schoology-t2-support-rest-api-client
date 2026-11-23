@@ -1,5 +1,10 @@
 """Check for updates. git copies update themselves with `git pull`; the stand-alone app checks GitHub
 Releases and links to the download. Only public information is fetched; nothing is sent.
+
+Nothing here names a particular GitHub account: a git copy uses the address it was cloned from (`origin`), and
+the stand-alone build carries the address of the repo it was built from (build_repo.txt, written by
+`python -m restclient.updater stamp` in the build scripts). Moving the project to another repo needs no code
+change.
 """
 
 from __future__ import annotations
@@ -15,10 +20,64 @@ from pathlib import Path
 from . import __version__
 from .config import resource_dir
 
-REPO = "dr460n4ir3/schoology-t2-support-rest-api-client"
 TEAM_FOLDER = "collections/"  # the team's shared requests: edited in the app, never block an update
-RELEASES_URL = f"https://github.com/{REPO}/releases/latest"
-API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
+STAMP_FILE = "build_repo.txt"  # bundled with the stand-alone build: the repo's web address
+
+
+@dataclass
+class RepoInfo:
+    web: str  # e.g. https://github.com/owner/repo
+    api: str  # e.g. https://api.github.com/repos/owner/repo
+
+    @property
+    def releases_url(self) -> str:
+        return self.web + "/releases/latest"
+
+
+_REMOTE = re.compile(r"^(?:(?:https?|ssh|git)://)?(?:[^@/]+@)?([^/:]+)(?::\d+)?[:/](.+?)/([^/]+?)(?:\.git)?/?$")
+
+
+def parse_remote(url: str) -> RepoInfo | None:
+    """'https://github.com/o/r.git', 'git@github.com:o/r.git', an enterprise host... -> RepoInfo.
+    Any user name or token in the address is dropped."""
+    m = _REMOTE.match((url or "").strip())
+    if not m:
+        return None
+    host, owner, name = m.group(1).lower(), m.group(2), m.group(3)
+    if host == "ssh.github.com":
+        host = "github.com"
+    api = (f"https://api.github.com/repos/{owner}/{name}" if host == "github.com"
+           else f"https://{host}/api/v3/repos/{owner}/{name}")  # GitHub Enterprise Server
+    return RepoInfo(web=f"https://{host}/{owner}/{name}", api=api)
+
+
+def repo_info() -> RepoInfo | None:
+    folder = source_folder()
+    if folder is not None and git_exe():
+        try:
+            url = _git("remote", "get-url", "origin", cwd=folder, timeout=15).stdout.strip()
+        except UpdateError:
+            url = ""
+        return parse_remote(url)
+    stamp = resource_dir() / STAMP_FILE
+    try:
+        return parse_remote(stamp.read_text(encoding="utf-8").strip())
+    except OSError:
+        return None
+
+
+def stamp(folder: Path | None = None) -> str:
+    """Write build_repo.txt (the repo's web address, no credentials) for the stand-alone build to carry."""
+    folder = folder or Path(__file__).resolve().parent.parent
+    info = None
+    if git_exe():
+        try:
+            info = parse_remote(_git("remote", "get-url", "origin", cwd=folder, timeout=15).stdout.strip())
+        except UpdateError:
+            info = None
+    text = info.web if info else ""
+    (folder / STAMP_FILE).write_text(text + "\n", encoding="utf-8")
+    return text
 
 
 class UpdateError(RuntimeError):
@@ -75,7 +134,8 @@ def check() -> UpdateStatus:
 
 
 def _check_git(folder: Path) -> UpdateStatus:
-    st = UpdateStatus(kind="git", url=RELEASES_URL)
+    info = repo_info()
+    st = UpdateStatus(kind="git", url=info.releases_url if info else "")
     fetch = _git("fetch", "--quiet", cwd=folder)
     if fetch.returncode != 0:
         st.message = "Couldn't reach GitHub: " + (_first_line(fetch.stderr) or "unknown error")
@@ -118,21 +178,27 @@ def _version_tuple(v: str) -> tuple:
 def _check_release() -> UpdateStatus:
     import requests
 
-    st = UpdateStatus(kind="release", url=RELEASES_URL)
+    info = repo_info()
+    if info is None:
+        return UpdateStatus(kind="none", message="This copy doesn't know which GitHub repo it came from. Ask the "
+                                                 "app admin for the latest version.")
+    st = UpdateStatus(kind="release", url=info.releases_url)
     try:
-        r = requests.get(API_LATEST, timeout=10, headers={"Accept": "application/vnd.github+json"})
+        r = requests.get(info.api + "/releases/latest", timeout=10,
+                         headers={"Accept": "application/vnd.github+json"})
     except requests.RequestException as exc:
         st.message = f"Couldn't reach GitHub: {exc}"
         return st
     if r.status_code == 404:
-        st.kind, st.message = "none", "No published builds yet. Ask the app admin for the latest version."
+        st.kind, st.message = "none", ("No published builds found (none yet, or the repo is private). Ask the "
+                                       "app admin for the latest version.")
         return st
     if r.status_code >= 400:
         st.message = f"GitHub answered {r.status_code}. Try again later."
         return st
     data = r.json()
     st.latest = str(data.get("tag_name") or "").lstrip("v")
-    st.url = data.get("html_url") or RELEASES_URL
+    st.url = data.get("html_url") or info.releases_url
     st.changes = [line.strip("-* ").strip() for line in (data.get("body") or "").splitlines()
                   if line.strip().startswith(("-", "*"))][:20]
     st.available = _version_tuple(st.latest) > _version_tuple(__version__)
@@ -201,3 +267,7 @@ def spawn_restart(port: int) -> None:
     else:
         subprocess.Popen(restart_command(port), cwd=folder, start_new_session=True, close_fds=True,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["stamp"]:
+    print("build_repo.txt:", stamp() or "(no GitHub address found: the build won't check for updates)")
