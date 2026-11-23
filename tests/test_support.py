@@ -10,7 +10,7 @@ import keyring
 import pytest
 from keyring.backend import KeyringBackend
 
-from restclient import engine, redact, secret_store, support, updater
+from restclient import engine, redact, secret_store, support, updater, vault
 from restclient.config import Settings
 from restclient.models import KV, Auth, Collection, Environment, Folder, Request
 from restclient.ollama import Ollama
@@ -42,9 +42,16 @@ def memory_keyring(monkeypatch):
     keyring.set_keyring(ring)
     monkeypatch.setenv("RESTCLIENT_KEYCHAIN", "1")
     secret_store.reset_cache()
+    vault.reset_cache()
     yield ring
     keyring.set_keyring(previous)
     secret_store.reset_cache()
+    vault.reset_cache()
+
+
+def _values(ring) -> list:
+    """The secret values in the fake keychain, leaving out the file encryption key."""
+    return [v for (_service, account), v in ring.data.items() if account != vault.KEY_ACCOUNT]
 
 
 def _settings(tmp_path, **kw):
@@ -62,10 +69,11 @@ def test_secrets_go_to_keychain_not_the_file(tmp_path, memory_keyring):
     store = Store(_settings(tmp_path))
     env = _district()
     path = store.save_environment(env)
-    text = path.read_text(encoding="utf-8")
+    assert b"12345" not in path.read_bytes()  # the whole file is encrypted
+    text = vault.read_text(path)
     assert "s3cr3t-value" not in text and "client-s3cret" not in text
     assert "12345" in text and '"keychain": true' in text
-    assert set(memory_keyring.data.values()) == {"s3cr3t-value", "client-s3cret"}
+    assert set(_values(memory_keyring)) == {"s3cr3t-value", "client-s3cret"}
     loaded = Store(_settings(tmp_path)).load_environments()[0]
     assert {v.key: v.value for v in loaded.variables}["schoology_consumer_secret"] == "s3cr3t-value"
     assert loaded.auth.client_secret == "client-s3cret"
@@ -86,14 +94,15 @@ def test_old_plain_text_secrets_are_moved(tmp_path, memory_keyring, monkeypatch)
 def test_placeholders_and_variables_stay_in_the_file(tmp_path, memory_keyring):
     env = Environment(name="Example", variables=[KV("client_secret", "PASTE-CLIENT-SECRET", secret=True)],
                       auth=Auth(type="oauth2", client_secret="{{client_secret}}"))
-    text = Store(_settings(tmp_path)).save_environment(env).read_text(encoding="utf-8")
-    assert "PASTE-CLIENT-SECRET" in text and "{{client_secret}}" in text and not memory_keyring.data
+    text = vault.read_text(Store(_settings(tmp_path)).save_environment(env))
+    assert "PASTE-CLIENT-SECRET" in text and "{{client_secret}}" in text and not _values(memory_keyring)
 
 
 def test_missing_keychain_entry_is_reported(tmp_path, memory_keyring):
     store = Store(_settings(tmp_path))
     store.save_environment(_district())
-    memory_keyring.data.clear()  # e.g. the file was copied to another computer
+    for k in [k for k in memory_keyring.data if k[1] != vault.KEY_ACCOUNT]:  # e.g. the entries were removed
+        del memory_keyring.data[k]
     fresh = Store(_settings(tmp_path))
     env = fresh.load_environments()[0]
     assert {v.key: v.value for v in env.variables}["schoology_consumer_secret"] == ""
@@ -163,7 +172,8 @@ def test_ticket_text_has_key_fields_and_no_secrets():
                         text=json.dumps({"id": 12345, "name_first": "Maria", "token": "bearer-tok-777",
                                          "roles": [1, 2]}))
     text = support.ticket_text("Users / Get user", "Example District", rr, res)
-    assert "Environment: Example District" in text and "200 OK" in text and "name_first: Maria" in text
+    assert "Environment: Example District" in text and "200 OK" in text and "id: 12345" in text
+    assert "Maria" not in text  # personal data stays out of tickets
     assert "bearer-tok-777" not in text and "roles" not in text
 
 

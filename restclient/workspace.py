@@ -13,10 +13,24 @@ class Workspace:
         self.store = Store(self.settings)
         if seed:
             self.store.seed_examples()
+            self._encrypt_old_files()
         self.collections: list[Collection] = []
         self.version = 0  # bumped on every collection change (the UI uses it to refresh the Team badge)
         self.environments: list[Environment] = []
         self.reload()
+
+    def _encrypt_old_files(self) -> None:
+        """Recent lookups and saved Bulk Runner results from older versions are plain text: encrypt them now.
+        (Environments are converted when they load.)"""
+        from . import support, vault
+
+        if not vault.available():
+            return
+        for path in [support.recent_path(), *self.settings.results_path.glob("*.csv")]:
+            try:
+                vault.encrypt_in_place(path)
+            except (OSError, ValueError, vault.VaultError):
+                pass
 
     def reload(self) -> None:
         self.store = Store(self.settings)

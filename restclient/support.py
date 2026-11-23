@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from . import engine, redact
+from . import engine, privacy, redact, vault
 from .config import Settings, app_home
 from .models import Collection, Environment, Request
 from .variables import auth_strings, build_scope, effective_auth, find_vars, request_variables, substitute
@@ -113,7 +113,7 @@ def ticket_text(title: str, environment: str, rr: engine.ResolvedRequest, res: e
         lines.append(f"Meaning: {tip}")
     if res.note:
         lines.append(f"Note: {res.note}")
-    fields = key_fields(res.json()) if not res.error else []
+    fields = key_fields(privacy.mask(res.json())) if not res.error else []  # personal data stays hidden
     if fields:
         lines.append("Key fields:")
         lines += [f"  {k}: {v}" for k, v in fields]
@@ -229,9 +229,9 @@ def bake(request: Request, c: Collection | None, env: Environment | None) -> tup
 
 def load_recent() -> list[dict]:
     try:
-        data = json.loads(recent_path().read_text(encoding="utf-8"))
+        data = json.loads(vault.read_text(recent_path()))
         return data if isinstance(data, list) else []
-    except (OSError, ValueError):
+    except (OSError, ValueError, vault.VaultError):
         return []
 
 
@@ -263,10 +263,7 @@ def record_lookup(request: Request, c: Collection | None, env: Environment | Non
                      e.get("request", {}).get("url"), json.dumps(e.get("request", {}).get("params")),
                      e.get("request", {}).get("body")) != key]
         items.insert(0, entry)
-        path = recent_path()
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(items[:RECENT_KEEP], indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
+        vault.write_text(recent_path(), json.dumps(items[:RECENT_KEEP], indent=2, ensure_ascii=False))
 
 
 def clear_recent() -> None:

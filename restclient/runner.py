@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from . import redact
+from . import privacy, redact, vault
 from .config import Settings
 from .engine import execute, new_session
 from .models import Collection, Environment, Request
@@ -234,14 +234,20 @@ def results_to_csv(results: list[StepResult]) -> str:
     for r in results:
         writer.writerow([r.row, r.request, r.method, r.url, r.status if r.status is not None else "",
                          "PASS" if r.passed else "FAIL", r.elapsed_ms, r.error]
-                        + [r.extracted.get(c, "") for c in extracted_cols]
+                        + [privacy.HIDDEN if privacy.is_personal_field(c) and r.extracted.get(c) not in (None, "")
+                           else r.extracted.get(c, "") for c in extracted_cols]
                         + [r.inputs.get(c, "") for c in input_cols]
-                        + [r.response[:1000].replace("\r", " ").replace("\n", " ")])
+                        + [privacy.mask_text(r.response, True)[:1000].replace("\r", " ").replace("\n", " ")])
     return buf.getvalue()
 
 
 def save_results(results: list[StepResult], settings: Settings, label: str = "run") -> Path:
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", label).strip("_")[:60] or "run"
     path = settings.results_path / f"{datetime.now():%Y-%m-%d_%H%M%S}_{safe}.csv"
-    path.write_text(results_to_csv(results), encoding="utf-8-sig", newline="")
+    vault.write_text(path, results_to_csv(results))  # encrypted: open it with the app's Saved runs button
     return path
+
+
+def read_saved_results(path: Path) -> str:
+    """A saved results file as CSV text (decrypted)."""
+    return vault.read_text(path)

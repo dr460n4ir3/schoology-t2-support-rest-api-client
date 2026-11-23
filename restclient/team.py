@@ -149,15 +149,53 @@ def find_secrets(root: Path, changes: list[Change]) -> list[str]:
             data = json.loads((root / ch.path).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        auth = data.get("auth") or {}
-        bad = [f for f in AUTH_SECRET_FIELDS if _real(auth.get(f))]
-        bad += [h.get("key") for h in data.get("headers") or [] if isinstance(h, dict)
-                and _SECRET_HEADER.match(str(h.get("key", ""))) and _real(h.get("value"))]
-        bad += [v.get("key") for v in data.get("variables") or [] if isinstance(v, dict) and _real(v.get("value"))
-                and any(w in str(v.get("key", "")).lower() for w in ("secret", "password", "token", "key"))]
+        bad = secrets_in(data)
         if bad:
             found.append(f"{ch.label}: {', '.join(str(b) for b in bad)}")
     return found
+
+
+_BODY_PAIR = re.compile(r"""["']?([A-Za-z_\-]+)["']?\s*[:=]\s*["']?([^"'&\s,}]+)""")
+_SECRET_WORDS = ("secret", "password", "passwd", "pwd", "token", "apikey", "api_key", "access_key", "private_key")
+
+
+def _secret_name(name) -> bool:
+    n = str(name or "").lower().replace("-", "_")
+    return any(w in n for w in _SECRET_WORDS) and n not in ("token_url", "token_type", "grant_type")
+
+
+def _json_secrets(value, out: list[str]) -> None:
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if isinstance(v, str) and _secret_name(k) and _real(v):
+                out.append(f"body {k}")
+            else:
+                _json_secrets(v, out)
+    elif isinstance(value, list):
+        for v in value:
+            _json_secrets(v, out)
+
+
+def secrets_in(data: dict) -> list[str]:
+    """Names of the places in one request/collection file that hold a real key, password or token."""
+    auth = data.get("auth") or {}
+    bad = [f for f in AUTH_SECRET_FIELDS if _real(auth.get(f))]
+    bad += [h.get("key") for h in data.get("headers") or [] if isinstance(h, dict)
+            and _SECRET_HEADER.match(str(h.get("key", ""))) and _real(h.get("value"))]
+    bad += [v.get("key") for v in data.get("variables") or [] if isinstance(v, dict) and _real(v.get("value"))
+            and any(w in str(v.get("key", "")).lower() for w in ("secret", "password", "token", "key"))]
+    for where in ("params", "form"):
+        bad += [f"{where} {v.get('key')}" for v in data.get(where) or [] if isinstance(v, dict)
+                and _secret_name(v.get("key")) and _real(v.get("value"))]
+    body = data.get("body")
+    if isinstance(body, str) and body.strip():
+        try:
+            _json_secrets(json.loads(body), bad)
+        except ValueError:  # text / urlencoded body: look for password=... or "password": "..."
+            for m in _BODY_PAIR.finditer(body):
+                if _secret_name(m.group(1)) and _real(m.group(2)):
+                    bad.append(f"body {m.group(1)}")
+    return bad
 
 
 def _real(value) -> bool:

@@ -160,21 +160,31 @@ def _ordered_children(folder: Path, order: list) -> list[Path]:
     return out
 
 
-def _read_items(folder: Path, order: list, root: Path, problems: list[str]) -> list[Item]:
+def _unique_id(wanted, root: Path, path: Path, seen: set[str]) -> str:
+    """The file's id, unless another item already uses it (a copied file keeps the original's id): then one
+    derived from the file's path, so the two stay separate requests."""
+    rid = str(wanted) if wanted else _stable_id(root, path)
+    if rid in seen:
+        rid = _stable_id(root, path)
+    seen.add(rid)
+    return rid
+
+
+def _read_items(folder: Path, order: list, root: Path, problems: list[str], seen: set[str]) -> list[Item]:
     items: list[Item] = []
     for path in _ordered_children(folder, order):
         if path.is_dir():
             meta = (_read_json(path / FOLDER_META, problems, root) if (path / FOLDER_META).exists() else {}) or {}
             f = Folder(name=meta.get("name") or path.name, description=meta.get("description", ""),
-                       id=meta.get("id") or _stable_id(root, path))
-            f.items = _read_items(path, meta.get("order") or [], root, problems)
+                       id=_unique_id(meta.get("id"), root, path, seen))
+            f.items = _read_items(path, meta.get("order") or [], root, problems, seen)
             items.append(f)
             continue
         data = _read_json(path, problems, root)
         if data is None:
             continue
         data.setdefault("name", path.stem)
-        data.setdefault("id", _stable_id(root, path))
+        data["id"] = _unique_id(data.get("id"), root, path, seen)
         items.append(Request.from_dict(data))
     return items
 
@@ -191,7 +201,7 @@ def read_collection(folder: Path) -> tuple[Collection, list[str]]:
     c = Collection(id=meta.get("id") or _stable_id(folder.parent, folder), name=meta.get("name") or folder.name,
                    description=meta.get("description", ""), variables=kv_list(meta.get("variables")), auth=auth,
                    path=folder)
-    c.items = _read_items(folder, meta.get("order") or [], folder, problems)
+    c.items = _read_items(folder, meta.get("order") or [], folder, problems, set())
     return c, problems
 
 

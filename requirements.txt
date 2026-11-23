@@ -5,4 +5,5 @@ truststore>=0.10
 mcp>=2.3,<3
 pypdf>=5.0
 keyring>=25
+cryptography>=42  # encrypts the files in the app folder (vault.py)
 pytest>=8

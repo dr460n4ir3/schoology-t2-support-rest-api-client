@@ -20,8 +20,8 @@ from pathlib import Path
 
 from nicegui import app, run, ui
 
-from . import APP_NAME, __version__, copilot_setup, engine, launcher, postman, redact, runner, secret_store, support, \
-    team, updater
+from . import APP_NAME, __version__, copilot_setup, engine, launcher, postman, privacy, redact, runner, secret_store, \
+    support, team, updater, vault
 from .assistant import MAX_TOOL_ROUNDS, Assistant, strip_thinking
 from .config import app_home, load_settings, save_settings
 from .knowledge import SUPPORTED as KB_TYPES, open_kb
@@ -415,6 +415,7 @@ class ClientPage:
         self.dirty = False
         self._loading = False
         self.last_result: engine.Result | None = None
+        self.show_personal = False  # personal fields in responses: hidden until the user clicks Show
         self.last_resolved: engine.ResolvedRequest | None = None
         # runner state
         self.run_rows: list[dict] = []
@@ -987,9 +988,8 @@ class ClientPage:
             with ui.tab_panel("Body").classes("p-3"):
                 self.body_mode = ui.toggle(BODY_MODES, value="none", on_change=self.on_body_mode) \
                     .props("no-caps dense unelevated toggle-color=primary")
-                self.body_editor = ui.codemirror("", language="JSON", on_change=self.on_body_change, theme=self.cm_theme(),
-                                                 line_wrapping=True) \
-                    .classes("w-full border rounded mt-2").style("height: 220px")
+                self.body_holder = ui.column().classes("w-full gap-0")
+                self._make_body_editor("", self.current.id)
                 self.body_tools = ui.row().classes("gap-1")
                 with self.body_tools:
                     ui.button("Format JSON", icon="auto_fix_high", on_click=self.format_json) \
@@ -1010,6 +1010,12 @@ class ClientPage:
                 self.status_badge.set_visibility(False)
                 self.meta_label = ui.label("Send a request to see the response here.").classes("text-sm text-grey-7")
                 ui.space()
+                self.personal_btn = ui.button("Show personal data", icon="visibility",
+                                              on_click=self.toggle_personal_data) \
+                    .props("flat dense no-caps color=grey-8") \
+                    .tooltip("Names, emails, birth dates, phones and addresses are hidden. Click to show them on "
+                             "screen. Copies, downloads and saved files always keep them hidden.")
+                self.personal_btn.set_visibility(False)
                 ui.button("Copy for ticket", icon="assignment", on_click=self.copy_for_ticket) \
                     .props("flat dense no-caps").tooltip("Request, environment, status, meaning and key fields, "
                                                          "with keys and secrets hidden")
@@ -1087,7 +1093,20 @@ class ClientPage:
         self.update_body_visibility()
         self.mark_dirty()
 
-    def on_body_change(self, e) -> None:
+    def _make_body_editor(self, text: str, owner_id: str) -> None:
+        """A fresh body editor for one request. The editor sends typing to the server as small edits, so edits
+        still on their way from the previous request would otherwise land in this one's body. Each request
+        gets its own editor; late edits go to the old (deleted) editor and are dropped."""
+        self.body_holder.clear()
+        with self.body_holder:
+            self.body_editor = ui.codemirror(text, language="JSON", theme=self.cm_theme(), line_wrapping=True,
+                                             on_change=lambda e, rid=owner_id: self.on_body_change(e, rid)) \
+                .classes("w-full border rounded mt-2").style("height: 220px")
+        self._body_owner = owner_id
+
+    def on_body_change(self, e, owner_id: str | None = None) -> None:
+        if self._loading or owner_id != self.current.id:
+            return  # a late edit meant for another request
         self.current.body = e.value or ""
         self.mark_dirty()
 
@@ -1130,7 +1149,10 @@ class ClientPage:
         self.params_editor.set_items(req.params)
         self.headers_editor.set_items(req.headers)
         self.body_mode.value = req.body_mode
-        self.body_editor.value = req.body
+        if getattr(self, "_body_owner", None) == req.id:
+            self.body_editor.value = req.body  # same request (e.g. just saved): keep the editor
+        else:
+            self._make_body_editor(req.body, req.id)
         self.form_editor.set_items(req.form)
         self.auth_editor.set_auth(req.auth)
         self.notes.value = req.description
@@ -1389,8 +1411,37 @@ class ClientPage:
             except OSError as exc:
                 log.warning("Could not save the recent lookup: %s", exc)
 
+    def toggle_personal_data(self) -> None:
+        self.show_personal = not self.show_personal
+        if self.last_result and self.last_resolved:
+            self._render_response_text(self.last_resolved, self.last_result)
+
+    def _render_response_text(self, rr: engine.ResolvedRequest, res: engine.Result) -> None:
+        """Body and Request sent views: secrets always hidden, personal fields hidden unless shown on purpose."""
+        hide = not self.show_personal
+        secrets = rr.auth.secret_values()
+        if res.error:
+            self.resp_body.language = None
+            self.resp_body.value = redact.redact(res.error, secrets)
+            raw = ""
+        else:
+            raw = res.pretty_body()
+            body = redact.redact(privacy.mask_text(raw, hide), secrets)
+            is_json = res.json() is not None
+            self.resp_body.language = "JSON" if is_json else ("XML" if body.lstrip().startswith("<") else None)
+            self.resp_body.value = body if len(body) < 5_000_000 else body[:5_000_000] + "\n… (truncated; download for full)"
+        sent = [f"{res.method or rr.method} {res.url or rr.url}"] + [f"{k}: {v}" for k, v in res.request_headers.items()]
+        if rr.body:
+            sent += ["", privacy.mask_text(rr.body, hide)]
+        self.sent_view.value = redact.redact("\n".join(sent), secrets)  # never show keys on screen
+        has_personal = privacy.has_personal_data(raw) or privacy.has_personal_data(rr.body or "")
+        self.personal_btn.set_visibility(has_personal)
+        self.personal_btn.text = "Hide personal data" if self.show_personal else "Show personal data"
+        self.personal_btn.props(f"icon={'visibility_off' if self.show_personal else 'visibility'}")
+
     def show_result(self, rr: engine.ResolvedRequest, res: engine.Result, tip: str = "") -> None:
         self.last_result, self.last_resolved = res, rr
+        self.show_personal = False  # every new response starts hidden
         self.tip_label.text = tip
         self.tip_row.set_visibility(bool(tip))
         self.status_badge.set_visibility(True)
@@ -1398,32 +1449,23 @@ class ClientPage:
             self.status_badge.text = "Error"
             self.status_badge.props("color=red")
             self.meta_label.text = f"{res.elapsed_ms} ms"
-            self.resp_body.language = None
-            self.resp_body.value = res.error
         else:
             color = "green" if res.status < 300 else "blue" if res.status < 400 else "orange" if res.status < 500 else "red"
             self.status_badge.text = f"{res.status} {res.reason}"
             self.status_badge.props(f"color={color}")
             self.meta_label.text = f"{res.elapsed_ms} ms · {engine.human_size(res.size)} · {res.method} {res.url}"
-            body = res.pretty_body()
-            is_json = res.json() is not None
-            self.resp_body.language = "JSON" if is_json else ("XML" if body.lstrip().startswith("<") else None)
-            self.resp_body.value = body if len(body) < 5_000_000 else body[:5_000_000] + "\n… (truncated; download for full)"
+        self._render_response_text(rr, res)
         self.note_label.text = res.note
         self.resp_headers.rows = [{"name": k, "value": v} for k, v in res.headers.items()]
         self.resp_headers.update()
         self.resp_headers_tab.props(f'label="Headers ({len(res.headers)})"')
-        sent = [f"{res.method or rr.method} {res.url or rr.url}"] + [f"{k}: {v}" for k, v in res.request_headers.items()]
-        if rr.body:
-            sent += ["", rr.body]
-        self.sent_view.value = "\n".join(sent)
 
     def preview_current(self) -> None:
         rr = engine.resolve(self.current, self.collection(), self.env())
         extra = ""
         if rr.unresolved():
             extra = "\n\n⚠ Not set: " + ", ".join("{{%s}}" % v for v in sorted(rr.unresolved()))
-        self.show_text("Preview — nothing has been sent", rr.describe() + extra)
+        self.show_text("Preview — nothing has been sent", redact.redact(rr.describe() + extra, rr.auth.secret_values()))
 
     def copy_curl(self, include_credentials: bool = False) -> None:
         rr = engine.resolve(self.current, self.collection(), self.env())
@@ -1440,7 +1482,8 @@ class ClientPage:
         res, rr = self.last_result, self.last_resolved
         if not res:
             return ""
-        return redact.redact(res.pretty_body() or res.error or "", rr.auth.secret_values() if rr else ())
+        body = privacy.mask_text(res.pretty_body(), True) if not res.error else res.error  # personal data stays hidden
+        return redact.redact(body or "", rr.auth.secret_values() if rr else ())
 
     def copy_response(self) -> None:
         if self.last_result:
@@ -1565,8 +1608,8 @@ class ClientPage:
             ui.space()
             self.only_failures = ui.switch("Show failures only", on_change=lambda: self._render_results(force=True))
             ui.button("Download results", icon="download", on_click=self.download_results).props("flat no-caps")
-            ui.button("Open results folder", icon="folder_open",
-                      on_click=lambda: self.open_folder(WS.settings.results_path)).props("flat no-caps")
+            ui.button("Saved runs", icon="history", on_click=self.saved_runs).props("flat no-caps") \
+                .tooltip("Earlier runs are saved encrypted on this computer. Download one as a CSV here.")
         self.progress = ui.linear_progress(value=0, show_value=False).classes("mt-2")
         self.progress_label = ui.label("").classes("text-sm")
         self.results_table = ui.table(rows=[], columns=[
@@ -1743,14 +1786,12 @@ class ClientPage:
             step = self.run_results[row["idx"]]
         except (IndexError, KeyError, TypeError):
             return
-        try:
-            body = json.dumps(json.loads(step.response), indent=2)
-        except ValueError:
-            body = step.response
+        body = privacy.mask_text(step.response, True)
+        extracted = {k: (privacy.HIDDEN if privacy.is_personal_field(k) else v) for k, v in step.extracted.items()}
         text = (f"Row {step.row} · {step.request}\n{step.method} {step.url}\nStatus: {step.status}  "
                 f"Result: {'PASS' if step.passed else 'FAIL'}  ({step.elapsed_ms} ms)\n"
                 f"{('Error: ' + step.error) if step.error else ''}\nInputs: {step.inputs}\n"
-                f"Extracted: {step.extracted}\n\n{body}")
+                f"Extracted: {extracted}\n\n{body}")
         self.show_text(f"Row {step.row} details", text)
 
     def download_results(self) -> None:
@@ -1758,6 +1799,40 @@ class ClientPage:
             ui.notify("No results yet", type="warning")
             return
         ui.download.content(runner.results_to_csv(self.run_results).encode("utf-8-sig"), "bulk_run_results.csv")
+
+    def saved_runs(self) -> None:
+        """Saved Bulk Runner results are encrypted (vault.py), so they are opened from here, not from the folder."""
+        files = sorted(WS.settings.results_path.glob("*.csv"), reverse=True)[:50]
+
+        def download(path: Path) -> None:
+            try:
+                text = runner.read_saved_results(path)
+            except (OSError, vault.VaultError) as exc:
+                ui.notify(f"Couldn't open {path.name}: {exc}", type="negative")
+                return
+            ui.download.content(text.encode("utf-8-sig"), path.name)
+
+        def delete(path: Path, row) -> None:
+            path.unlink(missing_ok=True)
+            row.delete()
+
+        with ui.dialog() as dialog, ui.card().classes("w-[560px] max-w-full"):
+            ui.label("Saved runs").classes("text-lg font-semibold")
+            ui.label("Kept encrypted on this computer. Personal fields are hidden in them.") \
+                .classes("text-sm text-grey-7")
+            if not files:
+                ui.label("No saved runs yet.").classes("text-sm")
+            with ui.column().classes("w-full gap-0 max-h-[60vh] overflow-auto"):
+                for f in files:
+                    with ui.row().classes("w-full items-center no-wrap gap-1") as row:
+                        ui.label(f.stem).classes("text-sm flex-grow truncate")
+                        ui.button(icon="download", on_click=lambda f=f: download(f)) \
+                            .props("flat round dense").tooltip("Download as CSV")
+                        ui.button(icon="delete", on_click=lambda f=f, row=row: delete(f, row)) \
+                            .props("flat round dense color=grey").tooltip("Delete")
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Close", on_click=dialog.close).props("flat no-caps")
+        dialog.open()
 
     def open_folder(self, path: Path) -> None:
         try:

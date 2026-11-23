@@ -1,5 +1,5 @@
 """Load and save collections (a folder per collection, a file per request: see collection_files.py) and
-environments (one JSON file each).
+environments (one JSON file each, encrypted: see vault.py).
 
 Secret environment values (the lock icon) and auth secrets are kept in the Mac Keychain / Windows Credential
 Manager when one is available (see secret_store.py); the environment file then only says "keychain": true.
@@ -9,14 +9,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
-import tempfile
 from pathlib import Path
 
 from . import collection_files as cf
-from . import redact, secret_store
+from . import redact, secret_store, vault
 from .config import Settings, app_home, resource_dir
 from .models import Collection, Environment
 from .variables import is_unset
@@ -32,16 +30,8 @@ def safe_filename(name: str) -> str:
     return cleaned[:80] or "untitled"
 
 
-def _atomic_write(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp_", suffix=".json")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2, ensure_ascii=False)
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+def _atomic_write(path: Path, data: dict, encrypt: bool = True) -> None:
+    vault.write_text(path, json.dumps(data, indent=2, ensure_ascii=False), encrypt_file=encrypt)
 
 
 def _target_path(folder: Path, name: str, current: Path | None, obj_id: str) -> Path:
@@ -54,9 +44,9 @@ def _target_path(folder: Path, name: str, current: Path | None, obj_id: str) -> 
         if not candidate.exists():
             return candidate
         try:
-            if json.loads(candidate.read_text(encoding="utf-8")).get("id") == obj_id:
+            if json.loads(vault.read_text(candidate)).get("id") == obj_id:
                 return candidate
-        except (OSError, ValueError):
+        except (OSError, ValueError, vault.VaultError):
             pass
     return folder / f"{base}_{obj_id}.json"
 
@@ -170,8 +160,10 @@ class Store:
             if path.name.startswith(".tmp_"):
                 continue
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                plain = _has_plain_secrets(data)
+                raw = path.read_bytes()
+                data = json.loads(vault.decrypt(raw))
+                # re-save older files: secrets into the keychain, the rest encrypted
+                plain = _has_plain_secrets(data) or (not vault.is_encrypted(raw) and vault.available())
                 self._fill_from_keychain(data, path.name)
                 env = Environment.from_dict(data, path)
             except Exception as exc:
@@ -249,7 +241,7 @@ class Store:
                 log.warning("%s - keeping the secrets of '%s' in its file", exc, e.name)
                 data = e.to_dict()
         redact.register(*e.secret_values())
-        _atomic_write(target, data)
+        _atomic_write(target, data, encrypt=self.use_keychain())
         if e.path and e.path.resolve() != target.resolve() and e.path.exists():
             e.path.unlink()
         e.path = target

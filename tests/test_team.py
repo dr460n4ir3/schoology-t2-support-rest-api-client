@@ -57,6 +57,21 @@ def test_hand_added_and_removed_files(tmp_path):
     assert again.find_request("Users/Find by email").id == c.find_request("Users/Find by email").id  # stable
 
 
+def test_copied_file_is_its_own_request(tmp_path):
+    folder = tmp_path / "Schoology API"
+    cf.write_collection(_sample(), folder)
+    original = folder / "Users" / "Get user.json"
+    (folder / "Users" / "Get user copy.json").write_text(original.read_text(encoding="utf-8"), encoding="utf-8")
+    c, _ = cf.read_collection(folder)
+    ids = [r.id for _, r in c.walk()]
+    assert len(ids) == len(set(ids))  # same "id" in both files: still two separate requests
+    copy = c.find_request("Users/Get user (2)") or [r for _, r in c.walk() if r.id != "r1" and r.name == "Get user"][0]
+    copy.body_mode, copy.body = "json", '{"only": "the copy"}'
+    cf.write_collection(c, folder)
+    again, _ = cf.read_collection(folder)
+    assert again.find_request("r1").body == ""
+
+
 def test_duplicate_names_get_separate_files(tmp_path):
     c = Collection(name="C", items=[Request(name="Same"), Request(name="Same"), Request(name="_folder")])
     files = cf.collection_files(c)
@@ -286,3 +301,25 @@ def test_request_changes_dont_count_as_app_updates(teammates, monkeypatch):
     monkeypatch.setattr(updater, "source_folder", lambda: me)
     assert not updater.check().available
     assert team.status().behind == 1
+
+
+def test_passwords_in_a_body_are_caught():
+    assert team.secrets_in({"body": '{"user": "pat", "password": "Hunter2!"}'}) == ["body password"]
+    assert team.secrets_in({"body": "username=pat&password=Hunter2!"}) == ["body password"]
+    assert team.secrets_in({"form": [{"key": "client_secret", "value": "abc123"}]}) == ["form client_secret"]
+    assert team.secrets_in({"body": '{"password": "{{password}}", "grant_type": "client_credentials"}'}) == []
+    assert team.secrets_in({"params": [{"key": "limit", "value": "20"}]}) == []
+
+
+def test_no_real_secrets_in_the_shared_collections():
+    """Runs on every push, so a key or password added straight on GitHub fails the check."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "collections"
+    found = []
+    for path in sorted(root.rglob("*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        bad = team.secrets_in(data)
+        if bad:
+            found.append(f"{path.relative_to(root).as_posix()}: {', '.join(map(str, bad))}")
+    assert not found, "Real keys or passwords in request files (use {{variables}}):\n" + "\n".join(found)
