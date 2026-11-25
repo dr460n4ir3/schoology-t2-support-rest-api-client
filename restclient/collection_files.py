@@ -11,6 +11,10 @@
 Hand edits are welcome: a request file only needs "name", "method" and "url". A file added without being listed
 in "order" still shows up (after the listed ones, A-Z), and an "order" entry whose file is gone is ignored, so a
 git merge can't lose a request. Missing ids are derived from the file's path, so loading never changes a file.
+
+Secrets are never written into these files (they go to GitHub): a key/secret typed on an Auth tab, or a value
+marked secret (the lock icon), is written as "" and the file only says "keychain". The value itself is kept in the
+Mac Keychain / Windows Credential Manager by storage.py.
 """
 
 from __future__ import annotations
@@ -25,6 +29,8 @@ import uuid
 from pathlib import Path
 
 from .models import Auth, Collection, Folder, Item, KV, Request, kv_list
+from .secret_store import AUTH_SECRET_FIELDS
+from .variables import is_unset
 
 COLLECTION_META = "_collection.json"
 FOLDER_META = "_folder.json"
@@ -50,44 +56,73 @@ def _stable_id(root: Path, path: Path) -> str:
     return uuid.uuid5(uuid.NAMESPACE_URL, "restclient:" + rel).hex[:12]
 
 
+# ------------------------------------------------------------------ secrets
+def is_real_secret(value) -> bool:
+    """A real secret value (not blank, a PASTE-... placeholder or a {{variable}})."""
+    return isinstance(value, str) and not is_unset(value) and "{{" not in value
+
+
+def auth_out(auth: Auth, strip_secrets: bool = True) -> dict:
+    d = auth.to_dict()
+    if strip_secrets:
+        moved = [f for f in AUTH_SECRET_FIELDS if is_real_secret(d.get(f))]
+        for f in moved:
+            d[f] = ""
+        if moved:
+            d["keychain"] = moved
+    return d
+
+
+def has_plain_secrets(data: dict) -> bool:
+    """True when a request / collection file holds a secret value in plain text."""
+    auth = data.get("auth") if isinstance(data.get("auth"), dict) else {}
+    if any(is_real_secret(auth.get(f)) for f in AUTH_SECRET_FIELDS):
+        return True
+    return any(isinstance(kv, dict) and kv.get("secret") and is_real_secret(kv.get("value"))
+               for name in ("params", "headers", "form", "variables") for kv in data.get(name) or [])
+
+
 # ------------------------------------------------------------------ compact request files
-def _kv_out(kv: KV) -> dict:
+def _kv_out(kv: KV, strip_secrets: bool = True) -> dict:
     d = {"key": kv.key, "value": kv.value}
     if not kv.enabled:
         d["enabled"] = False
     if kv.secret:
         d["secret"] = True
+        if strip_secrets and is_real_secret(kv.value):
+            d["value"], d["keychain"] = "", True
     return d
 
 
-def request_to_file(r: Request) -> dict:
+def request_to_file(r: Request, strip_secrets: bool = True) -> dict:
     """The request as a short, readable file: empty fields are left out."""
     d: dict = {"name": r.name, "method": r.method, "url": r.url}
     if r.description:
         d["description"] = r.description
     if r.params:
-        d["params"] = [_kv_out(p) for p in r.params]
+        d["params"] = [_kv_out(p, strip_secrets) for p in r.params]
     if r.headers:
-        d["headers"] = [_kv_out(h) for h in r.headers]
+        d["headers"] = [_kv_out(h, strip_secrets) for h in r.headers]
     if r.body_mode != "none":
         d["body_mode"] = r.body_mode
     if r.body:
         d["body"] = r.body
     if r.form:
-        d["form"] = [_kv_out(f) for f in r.form]
+        d["form"] = [_kv_out(f, strip_secrets) for f in r.form]
     if r.auth.type != "inherit":
-        d["auth"] = r.auth.to_dict()
+        d["auth"] = auth_out(r.auth, strip_secrets)
     if r.fetch_all_pages:
         d["fetch_all_pages"] = True
     d["id"] = r.id
     return d
 
 
-def _meta(kind: str, obj, order: list[str]) -> dict:
+def _meta(kind: str, obj, order: list[str], strip_secrets: bool = True) -> dict:
     if kind == "collection":
         c: Collection = obj
         return {"format": FORMAT, "id": c.id, "name": c.name, "description": c.description,
-                "variables": [_kv_out(v) for v in c.variables], "auth": c.auth.to_dict(), "order": order}
+                "variables": [_kv_out(v, strip_secrets) for v in c.variables],
+                "auth": auth_out(c.auth, strip_secrets), "order": order}
     f: Folder = obj
     d = {"id": f.id, "name": f.name, "order": order}
     if f.description:
@@ -95,8 +130,9 @@ def _meta(kind: str, obj, order: list[str]) -> dict:
     return d
 
 
-def collection_files(c: Collection) -> dict[str, str]:
-    """Every file of the collection: {relative posix path: text}."""
+def collection_files(c: Collection, strip_secrets: bool = True) -> dict[str, str]:
+    """Every file of the collection: {relative posix path: text}. Secret values are left out unless
+    strip_secrets=False (only when there is no password store to keep them in)."""
     out: dict[str, str] = {}
 
     def add_items(items: list[Item], prefix: str) -> list[str]:
@@ -115,11 +151,11 @@ def collection_files(c: Collection) -> dict[str, str]:
                 child_order = add_items(item.items, f"{prefix}{entry}/")
                 out[f"{prefix}{entry}/{FOLDER_META}"] = dumps(_meta("folder", item, child_order))
             else:
-                out[f"{prefix}{entry}"] = dumps(request_to_file(item))
+                out[f"{prefix}{entry}"] = dumps(request_to_file(item, strip_secrets))
         return order
 
     order = add_items(c.items, "")
-    out[COLLECTION_META] = dumps(_meta("collection", c, order))
+    out[COLLECTION_META] = dumps(_meta("collection", c, order, strip_secrets))
     return out
 
 
@@ -230,7 +266,7 @@ def _effective_order(listed, children: list[str]) -> list[str]:
     return [n.lower() for n in out + rest]
 
 
-def _same_meaning(folder: Path, rel: str, new_text: str) -> bool:
+def _same_meaning(folder: Path, rel: str, new_text: str, strip_secrets: bool = True) -> bool:
     """True when the file on disk already says the same thing in a different form (e.g. a teammate's hand-written
     file without an id, or an "order" list missing a file the loader appends anyway). Leaving such files alone
     keeps someone else's edit from showing up as your change."""
@@ -242,6 +278,8 @@ def _same_meaning(folder: Path, rel: str, new_text: str) -> bool:
         return False
     if not isinstance(old, dict):
         return False
+    if strip_secrets and has_plain_secrets(old):  # an older file with a secret in it: always re-write it
+        return False
     name = path.name.lower()
     if name in _RESERVED:
         old.setdefault("id", new.get("id"))
@@ -251,25 +289,25 @@ def _same_meaning(folder: Path, rel: str, new_text: str) -> bool:
             return False
         keys = (set(old) | set(new)) - {"order", "format"}
         if name == COLLECTION_META.lower():
-            old_auth = Auth.from_dict(old.get("auth"), "none").to_dict()
+            old_auth = auth_out(Auth.from_dict(old.get("auth"), "none"), strip_secrets)
             if old_auth != new.get("auth") or kv_list(old.get("variables")) != kv_list(new.get("variables")):
                 return False
             keys -= {"auth", "variables"}
         return all((old.get(k) or "") == (new.get(k) or "") for k in keys)
     old.setdefault("name", path.stem)
     old.setdefault("id", _stable_id(folder, path))
-    return request_to_file(Request.from_dict(old)) == new
+    return request_to_file(Request.from_dict(old), strip_secrets) == new
 
 
-def write_collection(c: Collection, folder: Path, trash: Path | None = None) -> list[str]:
+def write_collection(c: Collection, folder: Path, trash: Path | None = None, strip_secrets: bool = True) -> list[str]:
     """Write the collection into `folder`, touching only files that changed (so git shows just real edits).
     Files of requests/folders that were removed are moved to `trash`. Returns the changed relative paths."""
-    wanted = collection_files(c)
+    wanted = collection_files(c, strip_secrets)
     changed = []
     for rel, text in wanted.items():
         path = folder / rel
         try:
-            if path.read_text(encoding="utf-8") == text or _same_meaning(folder, rel, text):
+            if path.read_text(encoding="utf-8") == text or _same_meaning(folder, rel, text, strip_secrets):
                 continue
         except OSError:
             pass

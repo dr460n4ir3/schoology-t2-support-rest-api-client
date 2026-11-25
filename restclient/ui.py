@@ -417,6 +417,8 @@ class ClientPage:
         self.last_result: engine.Result | None = None
         self.show_personal = False  # personal fields in responses: hidden until the user clicks Show
         self.last_resolved: engine.ResolvedRequest | None = None
+        # each request's own last response, while the app is open (never written to disk); newest last
+        self.responses: dict[str, tuple] = {}
         # runner state
         self.run_rows: list[dict] = []
         self.run_columns: list[str] = []
@@ -1157,6 +1159,12 @@ class ClientPage:
         self.auth_editor.set_auth(req.auth)
         self.notes.value = req.description
         self.update_body_visibility()
+        if req.id in self.responses:  # this request's own last response, or an empty panel
+            rr, res, tip, self.last_meta = self.responses[req.id]
+            if self.last_result is not res:
+                self.show_result(rr, res, tip)
+        else:
+            self.clear_result()
         self._loading = False
         self.dirty = False
         self.dirty_badge.set_visibility(False)
@@ -1401,8 +1409,14 @@ class ClientPage:
             self.send_btn.props(remove="loading")
         auth_type = effective_auth(req, c, env).type
         title = c.request_label(req) if c and c.find_container(req.id) is not None else req.name
-        self.last_meta = (title, env.name if env else "", auth_type)
-        self.show_result(rr, res, support.error_tip(res, auth_type))
+        meta, tip = (title, env.name if env else "", auth_type), support.error_tip(res, auth_type)
+        self.responses.pop(req.id, None)
+        self.responses[req.id] = (rr, res, tip, meta)
+        while len(self.responses) > 30:  # keep memory in check: forget the oldest
+            self.responses.pop(next(iter(self.responses)))
+        if self.current.id == req.id:  # still on the same request (the user may have clicked away while waiting)
+            self.last_meta = meta
+            self.show_result(rr, res, tip)
         if res.status is not None:  # it reached the server: remember it under Recent (this computer only)
             try:
                 again = self.rerun_entry if self.rerun_entry and                     self.rerun_entry.get("request", {}).get("id") == req.id else None
@@ -1459,6 +1473,22 @@ class ClientPage:
         self.resp_headers.rows = [{"name": k, "value": v} for k, v in res.headers.items()]
         self.resp_headers.update()
         self.resp_headers_tab.props(f'label="Headers ({len(res.headers)})"')
+
+    def clear_result(self) -> None:
+        """An empty response panel (a request that hasn't been sent yet)."""
+        self.last_result = self.last_resolved = None
+        self.last_meta = ("", "", "")
+        self.show_personal = False
+        self.status_badge.set_visibility(False)
+        self.meta_label.text = "Send a request to see the response here."
+        self.personal_btn.set_visibility(False)
+        self.note_label.text = ""
+        self.tip_row.set_visibility(False)
+        self.resp_body.value = ""
+        self.sent_view.value = ""
+        self.resp_headers.rows = []
+        self.resp_headers.update()
+        self.resp_headers_tab.props('label="Headers"')
 
     def preview_current(self) -> None:
         rr = engine.resolve(self.current, self.collection(), self.env())

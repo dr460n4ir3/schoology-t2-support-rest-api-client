@@ -73,12 +73,12 @@ def test_recent_lookups_and_results_are_encrypted(tmp_path, keychain, monkeypatc
 
     s = Settings(results_dir=str(tmp_path / "r"))
     step = runner.StepResult(row=1, request="Get user", method="GET", url="https://x.test/users/1", status=200,
-                             passed=True, elapsed_ms=5, extracted={"email": "pat@example.test", "uid": "77"},
+                             passed=True, elapsed_ms=5, extracted={"email": "pat@example.test", "uid": "uid-778899"},
                              response='{"id": 1, "primary_email": "pat@example.test"}')
     path = runner.save_results([step], s, "run")
-    assert b"pat@example.test" not in path.read_bytes() and b"77" not in path.read_bytes()
+    assert b"pat@example.test" not in path.read_bytes() and b"uid-778899" not in path.read_bytes()
     text = runner.read_saved_results(path)
-    assert "77" in text and "pat@example.test" not in text  # personal fields hidden even inside the file
+    assert "uid-778899" in text and "pat@example.test" not in text  # personal fields hidden even inside the file
 
 
 def test_without_a_keychain_files_stay_readable(tmp_path, monkeypatch):
@@ -127,3 +127,50 @@ def test_xml_and_school_names():
     school = json.dumps({"org": {"sourcedId": "s-1", "name": "Lincoln High", "type": "school"}})
     assert "Lincoln High" in privacy.mask_text(school)  # school names aren't personal data
     assert not privacy.has_personal_data(school) and privacy.has_personal_data(json.dumps(SCHOOLOGY_USER))
+
+
+# ------------------------------------------------------------------ secrets typed on a request's Auth tab
+def _users_collection():
+    from restclient.models import Auth, Collection, Folder, Request
+    r = Request(id="list-users", name="List users", url="{{base_url}}/users",
+                auth=Auth(type="oauth1", consumer_key="my-key-1234", consumer_secret="my-secret-5678"))
+    return Collection(id="schoology", name="Schoology", items=[Folder(id="f-users", name="Users", items=[r])])
+
+
+def test_request_secret_is_kept_in_the_keychain_not_the_file(tmp_path, keychain):
+    s = Settings(collections_dir=str(tmp_path / "c"), environments_dir=str(tmp_path / "e"))
+    (tmp_path / "c").mkdir()
+    (tmp_path / "e").mkdir()
+    Store(s).save_collection(_users_collection())
+    text = (tmp_path / "c" / "Schoology" / "Users" / "List users.json").read_text(encoding="utf-8")
+    assert "my-secret-5678" not in text
+    assert "my-key-1234" in text  # the key on its own is not a secret
+    assert "my-secret-5678" in keychain.values()
+    again = Store(s).load_collections()[0]  # opening the app again: the secret comes back from the keychain
+    assert again.find_request("list-users").auth.consumer_secret == "my-secret-5678"
+
+
+def test_older_file_with_a_secret_in_it_is_cleaned(tmp_path, keychain):
+    from restclient import collection_files as cf
+    s = Settings(collections_dir=str(tmp_path / "c"), environments_dir=str(tmp_path / "e"))
+    (tmp_path / "e").mkdir()
+    folder = tmp_path / "c" / "Schoology"
+    cf.write_collection(_users_collection(), folder, strip_secrets=False)  # as an older version saved it
+    path = folder / "Users" / "List users.json"
+    assert "my-secret-5678" in path.read_text(encoding="utf-8")
+    loaded = Store(s).load_collections()[0]
+    assert "my-secret-5678" not in path.read_text(encoding="utf-8")
+    assert loaded.find_request("list-users").auth.consumer_secret == "my-secret-5678"
+
+
+def test_clearing_a_request_secret_removes_it(tmp_path, keychain):
+    s = Settings(collections_dir=str(tmp_path / "c"), environments_dir=str(tmp_path / "e"))
+    (tmp_path / "c").mkdir()
+    (tmp_path / "e").mkdir()
+    Store(s).save_collection(_users_collection())
+    store = Store(s)  # open the app, clear the secret, save
+    c = store.load_collections()[0]
+    c.find_request("list-users").auth.consumer_secret = ""
+    store.save_collection(c)
+    assert "my-secret-5678" not in keychain.values()
+    assert Store(s).load_collections()[0].find_request("list-users").auth.consumer_secret == ""

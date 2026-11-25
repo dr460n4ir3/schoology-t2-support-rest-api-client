@@ -3,6 +3,8 @@ environments (one JSON file each, encrypted: see vault.py).
 
 Secret environment values (the lock icon) and auth secrets are kept in the Mac Keychain / Windows Credential
 Manager when one is available (see secret_store.py); the environment file then only says "keychain": true.
+The same goes for collections: a key or secret typed on a request's Auth tab is never written into the request
+file (those files go to GitHub).
 """
 
 from __future__ import annotations
@@ -56,6 +58,31 @@ def _storable(value) -> bool:
     return isinstance(value, str) and not is_unset(value) and "{{" not in value
 
 
+def _collection_secret_slots(c: Collection):
+    """(keychain account, object, attribute) for every place in a collection that can hold a secret."""
+    def auth_slots(owner: str, auth):
+        if auth.type in ("inherit", "none"):
+            return
+        relevant = auth.to_dict()
+        for f in secret_store.AUTH_SECRET_FIELDS:
+            if f in relevant:
+                yield secret_store.ref(owner, f"auth:{f}"), auth, f
+
+    def kv_slots(owner: str, kind: str, kvs):
+        for kv in kvs:
+            if kv.secret and kv.key:
+                yield secret_store.ref(owner, f"{kind}:{kv.key}"), kv, "value"
+
+    base = f"collection:{c.id}"
+    yield from auth_slots(base, c.auth)
+    yield from kv_slots(base, "var", c.variables)
+    for _trail, r in c.walk():
+        owner = f"{base}/{r.id}"
+        yield from auth_slots(owner, r.auth)
+        for kind, kvs in (("param", r.params), ("header", r.headers), ("form", r.form)):
+            yield from kv_slots(owner, kind, kvs)
+
+
 def _has_plain_secrets(data: dict) -> bool:
     if any(v.get("secret") and _storable(v.get("value")) for v in data.get("variables") or []):
         return True
@@ -67,6 +94,7 @@ class Store:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.load_errors: list[str] = []
+        self._kept: dict[str, str] = {}  # collection secrets already in the keychain (account -> value)
 
     def use_keychain(self) -> bool:
         return bool(getattr(self.settings, "use_keychain", True)) and secret_store.available()
@@ -94,6 +122,12 @@ class Store:
                 self.load_errors.append(f"{path.name}: same id as another collection, skipped")
                 continue
             seen.add(c.id)
+            if self._fill_collection_secrets(c):  # an older file had a secret in it: move it to the keychain
+                try:
+                    self.save_collection(c)
+                    log.info("Moved the secrets of collection '%s' to the %s", c.name, secret_store.store_name())
+                except OSError as exc:
+                    log.warning("Could not re-save collection %s: %s", c.name, exc)
             out.append(c)
         for path in sorted(folder.glob("*.json")):  # older one-file collections: convert them once
             if path.name.startswith(".tmp_"):
@@ -115,6 +149,48 @@ class Store:
             seen.add(c.id)
             out.append(c)
         return sorted(out, key=lambda c: c.name.lower())
+
+    def _fill_collection_secrets(self, c: Collection) -> bool:
+        """Put the collection's secrets back from the keychain. Returns True when a file still had one in it."""
+        if not self.use_keychain():
+            return False
+        plain = False
+        for account, obj, attr in _collection_secret_slots(c):
+            value = getattr(obj, attr)
+            if _storable(value):
+                plain = True
+                redact.register(value)
+                continue
+            if value:  # a {{variable}} or PASTE-... placeholder
+                continue
+            try:
+                stored = secret_store.get(account)
+            except secret_store.SecretStoreError as exc:
+                self.load_errors.append(f"{c.name}: {exc}")
+                return False
+            if stored:
+                setattr(obj, attr, stored)
+                self._kept[account] = stored
+                redact.register(stored)
+        return plain
+
+    def _collection_secrets_to_keychain(self, c: Collection) -> bool:
+        """Keep the collection's secrets in the keychain. Returns False when the keychain couldn't be used."""
+        if not self.use_keychain():
+            return False
+        try:
+            for account, obj, attr in _collection_secret_slots(c):
+                value = getattr(obj, attr)
+                if _storable(value):
+                    if self._kept.get(account) != value:
+                        secret_store.put(account, value)
+                        self._kept[account] = value
+                    redact.register(value)
+                elif not value and self._kept.pop(account, None) is not None:
+                    secret_store.delete(account)  # cleared: don't leave the old value behind
+        except secret_store.SecretStoreError as exc:
+            log.warning("%s - the secrets of '%s' are kept for this session only", exc, c.name)
+        return True
 
     def _collection_dir(self, c: Collection) -> Path:
         """'<collections>/<name>', avoiding a different collection that has the same name."""
@@ -139,7 +215,9 @@ class Store:
         old = c.path
         if old and old.is_dir() and old.resolve() != target.resolve() and not target.exists():
             old.rename(target)  # renamed: move the folder so git sees a rename, not delete + add
-        cf.write_collection(c, target, self.trash_path())
+        # with no keychain at all (rare) the secrets stay in the files, as before
+        strip = self._collection_secrets_to_keychain(c)
+        cf.write_collection(c, target, self.trash_path(), strip_secrets=strip)
         if old and old.is_file() and old.suffix == ".json":  # converted from the older one-file format
             self._backup(old, self.trash_path())
             old.unlink()

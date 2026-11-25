@@ -228,7 +228,10 @@ def test_secrets_never_shared(teammates):
     me = teammates("me")
     c = _coll(me)
     c.find_request("r1").auth = Auth(type="bearer", token="real-token-123456")
-    _save(me, c)
+    _save(me, c)  # the app never writes the secret into the file
+    assert "real-token-123456" not in (me / "collections" / "Schoology API" / "Users" / "Get user.json").read_text()
+    # a file written by an older version, or by hand, is still stopped
+    cf.write_collection(c, me / "collections" / "Schoology API", strip_secrets=False)
     with pytest.raises(team.TeamError, match="real keys or secrets"):
         team.share("")
     assert team.status(fetch=False).unsent == 0
